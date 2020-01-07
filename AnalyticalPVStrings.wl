@@ -46,6 +46,11 @@ PlotIV::usage = "plot the IV curve with key points labelled."]
 If[ Not@ValueQ[ShadeAreaFraction::usage],
 ShadeAreaFraction::usage = "performs simple estimation of area based inter-row shading fraction of a typical array (sheds)."]
 
+If[ Not@ValueQ[ElectricalShading::usage],
+ElectricalShading::usage = "gives estimation on electrical shading."]
+
+Options[ElectricalShading]={"ModuleOrientation"->"landscape"};
+
 
 (* ::Chapter:: *)
 (*Main definitions*)
@@ -56,7 +61,7 @@ Begin["`Private`"];
 Off[InterpolatingFunction::dmval];
 
 
-(* ::Section:: *)
+(* ::Section::Closed:: *)
 (*IV curve functions*)
 
 
@@ -68,18 +73,20 @@ StringIV[IVset_,opt:OptionsPattern[]]:=Module[{maxJ,bypass=OptionValue["BypassDi
 If[bypass==True,maxJ=Max@IVset[[All,-1,1]],maxJ=Min@IVset[[All,-1,1]]];
 diodeVoltage=OptionValue["BypassDiodeVoltage"];
 
-combinedIV=With[{range=Range[0,maxJ]},
+combinedIV=With[{range=Range[0,maxJ,Min[maxJ/100,1]]},
 	{range,Total@Table[
 		With[{interp=Interpolation[DeleteDuplicatesBy[Round[IVset[[i]],0.00001],First],InterpolationOrder->1]},
 			Table[With[{interpPt=interp[x]},If[bypass==True&&interpPt<-diodeVoltage,-diodeVoltage,interpPt]],{x,range}]
 		]
 	,{i,Length@IVset}]}\[Transpose]];
 
-IV$fleetInterp=Interpolation[#,InterpolationOrder->1]&/@IVset;
+(* extend the IV curve towards higher current region to cover the complete voltage range *)
+IV$fleetInterp=Interpolation[DeleteDuplicatesBy[Round[#,0.00001],First],InterpolationOrder->1]&/@IVset;
 maxJ=combinedIV[[-1,1]];
-probe=maxJ*1.01;
+probe=maxJ;
 
-While[combinedIV[[-1,2]]>-diodeVoltage*Length@IVset*1.1 && probe<maxJ*1.1,
+While[(combinedIV[[-1,2]]>-diodeVoltage*Length@IVset*1.1 && probe<maxJ*1.1)||combinedIV[[-1,2]]>0,
+(* as long as not all bypass diodes are activated in the IVset, i.e. voltage is not negatively biased enough *)
 	probe=combinedIV[[-1,1]]*1.01;
 	AppendTo[combinedIV,{probe,Total@Table[
 		With[{interpPt=IV$fleetInterp[[i]][probe]},If[bypass==True&&interpPt<-diodeVoltage,-diodeVoltage,interpPt]]
@@ -155,6 +162,7 @@ Return[Show[plot2,plot1]];
 
 (* ::Text:: *)
 (*ShadeAreaFraction performs simple estimation of area based inter-row shading fraction of a typical array (sheds). *)
+(*Determines shading for direct beam component only. *)
 
 
 ShadeAreaFraction[d_,L_,w_,tilt_,orientation_,sunElev_,sunAzimuth_,n_:5,m_:10]:=Module[{\[Theta],rowFraction,widthFraction,shadeFraction},
@@ -174,6 +182,35 @@ shadeFraction=rowFraction*widthFraction;
 Return[shadeFraction];
 
 ];
+
+
+(* ::Text:: *)
+(*ElectricalShading uses a set of simple logic to estimate the amount of complete and partial shading of substrings in terms of rows of substrings for landscape (each PV module has three substring if there are three bypass diodes) or rows of cells for portrait. *)
+(*Applicable to standard c-Si modules with bypass diodes, in the case of horizontally symmetric shading mode. *)
+(*Requires shaded area fraction of the table, and number of substrings in the transverse direction of the table. *)
+(*In case there are more than one string per table, i.e. upper and lower sub-row belongs to different PV strings, additional translation is needed separately for each upper and lower PV string. *)
+
+
+ElectricalShading[areaShaded_,numSubString_,opt:OptionsPattern[]]:=Module[{subStringArea,orientation=OptionValue["ModuleOrientation"],eShadeElementFn,nCompleteShade,remain,fractionalShade,x},
+subStringArea=1/numSubString;
+
+If[orientation=="landscape",
+	eShadeElementFn=Piecewise[{{1/(0.5 subStringArea)*x,0<=x<0.5*subStringArea},{1,0.5*subStringArea<=x}},Null];
+,
+(* else, portrait, assume 72 cell module *)
+	eShadeElementFn=Piecewise[{{1/(1/12*subStringArea)*x,0<=x<1/12*subStringArea},{1,1/12*subStringArea<=x}},Null];
+];
+
+{nCompleteShade,remain}=QuotientRemainder[areaShaded,subStringArea];
+fractionalShade=(eShadeElementFn/.x->remain);
+
+Return@{nCompleteShade,fractionalShade};
+
+];
+
+
+(* ::Text:: *)
+(*ElectricalShading in irregular shading mode... *)
 
 
 (* ::Chapter:: *)
