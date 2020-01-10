@@ -40,8 +40,12 @@ MPPT::usage = "extract maximum power point in the IV curve."]
 
 Options[MPPT]={TrackingMethod->"Fast"};
 
-If[ Not@ValueQ[PlotIV::usage],
-PlotIV::usage = "plot the IV curve with key points labelled."]
+If[ Not@ValueQ[CablingCorrection::usage],
+CablingCorrection::usage = "Modifies IV to include effect of cabling series resistance. 
+Inputs are [IV curve, current, cable length (round trip), cable cross section (optional), resistivity (optional)]."]
+
+
+
 
 If[ Not@ValueQ[ShadeAreaFraction::usage],
 ShadeAreaFraction::usage = "performs simple estimation of area based inter-row shading fraction of a typical array (sheds)."]
@@ -50,6 +54,11 @@ If[ Not@ValueQ[ElectricalShading::usage],
 ElectricalShading::usage = "gives estimation on electrical shading."]
 
 Options[ElectricalShading]={"ModuleOrientation"->"landscape"};
+
+
+If[ Not@ValueQ[PlotIV::usage],
+PlotIV::usage = "plot the IV curve with key points labelled."]
+
 
 
 (* ::Chapter:: *)
@@ -61,27 +70,36 @@ Begin["`Private`"];
 Off[InterpolatingFunction::dmval];
 
 
-(* ::Section::Closed:: *)
+(* ::Section:: *)
 (*IV curve functions*)
 
 
 (* ::Text:: *)
-(*StringIV requires a set of IV curves in the format of {{current 1, voltage 1}, {current 2, voltage 2}...}. *)
+(*Overall convention: *)
+(*IV curve functions require a set of IV curves in the format of {{current 1, voltage 1}, {current 2, voltage 2}...}. *)
+(*The IV curves must be sorted by current in ascending order (from small to large, towards Isc, i.e. voltage from Voc, from +ve to -ve). *)
+(*Range of the input IV curves should be complete (at least covering one whole quadrant and cross the two axes). *)
+
+
+(* ::Text:: *)
+(*StringIV takes care of combining IV in series both on string level or sub-module level. *)
 
 
 StringIV[IVset_,opt:OptionsPattern[]]:=Module[{maxJ,bypass=OptionValue["BypassDiode"],diodeVoltage,combinedIV,IV$fleetInterp,probe},
-If[bypass==True,maxJ=Max@IVset[[All,-1,1]],maxJ=Min@IVset[[All,-1,1]]];
+If[bypass==True,maxJ=Max@IVset[[All,-1,1]],maxJ=Min@IVset[[All,-1,1]]]; (*when bypass diodes are present, scan probing current to the max available in the IV set*)
 diodeVoltage=OptionValue["BypassDiodeVoltage"];
 
-combinedIV=With[{range=Range[0,maxJ,Min[maxJ/100,1]]},
+(*for same current, add up voltage*)
+IV$fleetInterp=Interpolation[DeleteDuplicatesBy[Round[#,0.0001],First],InterpolationOrder->1]&/@IVset;
+combinedIV=With[{range=Range[-0.2*maxJ,-0.04*maxJ,0.04*maxJ]~Join~Range[0,maxJ,Min[maxJ/100,1]]},
 	{range,Total@Table[
-		With[{interp=Interpolation[DeleteDuplicatesBy[Round[IVset[[i]],0.00001],First],InterpolationOrder->1]},
+		With[{interp=IV$fleetInterp[[i]]},
 			Table[With[{interpPt=interp[x]},If[bypass==True&&interpPt<-diodeVoltage,-diodeVoltage,interpPt]],{x,range}]
+			(*when bypass diode is present, negative voltage is pinned at diode voltage beyond Isc*)
 		]
 	,{i,Length@IVset}]}\[Transpose]];
 
 (* extend the IV curve towards higher current region to cover the complete voltage range *)
-IV$fleetInterp=Interpolation[DeleteDuplicatesBy[Round[#,0.00001],First],InterpolationOrder->1]&/@IVset;
 maxJ=combinedIV[[-1,1]];
 probe=maxJ;
 
@@ -95,7 +113,43 @@ While[(combinedIV[[-1,2]]>-diodeVoltage*Length@IVset*1.1 && probe<maxJ*1.1)||com
 ];
 
 Return[combinedIV];
+];
 
+
+(* ::Text:: *)
+(*CombinerIV  takes care of combining IV in parallel both on string level or sub-module level. *)
+(*under development... *)
+(*In practice, IV behavior in the negative voltage range does not involve complications brought by diodes for strings/sub-strings combining in parallel (strings with bypass diodes combining in parallel, then in series with others is rarely seen in practice). *)
+
+
+CombinerIV[IVset_,opt:OptionsPattern[]]:=Module[{minV,maxV,diodeVoltage,combinedIV,IV$fleetInterp,probe},
+maxV=Min@IVset[[All,1,2]];
+minV=Min[Max@IVset[[All,-1,2]],-0.2*maxV]; 
+(*for IVs with bypass diode combining in parallel, negative voltage beyond diode voltages is not available, this part is either not interesting to look at in practice, or can be simply interpolated*)
+
+(*for same voltage, add up current*)
+IV$fleetInterp=Interpolation[DeleteDuplicatesBy[Round[#,0.0001],First],InterpolationOrder->1]&/@Map[Reverse/@#&,IVset];
+combinedIV=With[{range=Range[maxV,minV,-Min[maxV/100,0.1]]},
+	{Total@Table[
+		With[{interp=IV$fleetInterp[[i]]},
+			Table[interp[x],{x,range}]
+		]
+	,{i,Length@IVset}],range}\[Transpose]];
+
+(* extend the IV curve towards higher voltage region to cover a more complete current range *)
+(*maxJ=combinedIV[[-1,1]];
+probe=maxJ;
+
+While[(combinedIV[[-1,2]]>-diodeVoltage*Length@IVset*1.1 && probe<maxJ*1.1)||combinedIV[[-1,2]]>0,
+(* as long as not all bypass diodes are activated in the IVset, i.e. voltage is not negatively biased enough *)
+	probe=combinedIV[[-1,1]]*1.01;
+	AppendTo[combinedIV,{probe,Total@Table[
+		With[{interpPt=IV$fleetInterp[[i]][probe]},If[bypass==True&&interpPt<-diodeVoltage,-diodeVoltage,interpPt]]
+		,{i,Length@IVset}]}
+	];
+];*)
+
+Return[combinedIV];
 ];
 
 
@@ -120,44 +174,23 @@ If[method=="Robust",
 ];
 
 Return[MPP];
-
 ];
 
 
 (* ::Text:: *)
-(*CombinerIV under development... *)
+(*Cable voltage drop correction. Applies to string cables on the DC side. *)
+(*Default cross section is 6mm^2. Default resistivity is 0.023 ohm.mm^2/m (copper), use 0.037 for aluminum. *)
 
 
-CombinerIV[IVset_,opt:OptionsPattern[]]:=Module[{minV,diodeVoltage,combinedIV,IV$fleetInterp,probe},
+CablingCorrection[IV_,current_,cableLength_,crossSection_:6,\[Rho]_:0.023]:=Module[{\[Delta]V},
+\[Delta]V=current*\[Rho]*cableLength/crossSection;
 
-combinedIV=With[{range=Range[0,minV]},
-	{range,Total@Table[
-		With[{interp=Interpolation[DeleteDuplicatesBy[Round[IVset[[i]],0.00001],First],InterpolationOrder->1]},
-			Table[With[{interpPt=interp[x]},If[OptionValue["BypassDiode"]==True&&interpPt<-diodeVoltage,-diodeVoltage,interpPt]],{x,range}]
-		]
-	,{i,Length@IVset}]}\[Transpose]];
-	
-];
-
-
-PlotIV[IV_]:=Module[{Isc,Voc,mpp,plot1,plot2},
-
-Isc=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First],InterpolationOrder->1][0];
-Voc=Interpolation[DeleteDuplicatesBy[IV,First],InterpolationOrder->1][0];
-
-mpp=MPPT@IV;
-
-plot1=ListLinePlot[Reverse/@IV,AxesLabel->{"V","I"}];
-plot2=ListPlot[{Callout[{Voc,0},"Voc = "<>ToString@Round[Voc,0.1]],Callout[{0,Isc},"Isc = "<>ToString@Round[Isc,0.1]],Callout[Reverse@mpp[[;;2]],"Vmpp = "<>ToString@Round[mpp[[2]],0.1]<>", Impp = "<>ToString@Round[mpp[[1]],0.1],Left]},
-PlotStyle->{Red,PointSize[Large]},Epilog->{Text["FF = "<>ToString@Round[Last@mpp/(Isc*Voc),0.01],{Voc/2,Isc/2},{0,-1}],Text["Power = "<>ToString@Round[Last@mpp,0.1],{Voc/2,Isc/2},{0,1}]}];
-
-Return[Show[plot2,plot1]];
-
+Return[{#1,#2-Abs@\[Delta]V}&@@@IV];
 ];
 
 
 (* ::Section:: *)
-(*Auxiliary functions*)
+(*Shading logics*)
 
 
 (* ::Text:: *)
@@ -211,6 +244,26 @@ Return@{nCompleteShade,fractionalShade};
 
 (* ::Text:: *)
 (*ElectricalShading in irregular shading mode... *)
+
+
+(* ::Section:: *)
+(*Auxiliary functions*)
+
+
+PlotIV[IV_]:=Module[{Isc,Voc,mpp,plot1,plot2},
+
+Isc=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First],InterpolationOrder->1][0];
+Voc=Interpolation[DeleteDuplicatesBy[IV,First],InterpolationOrder->1][0];
+
+mpp=MPPT@IV;
+
+plot1=ListLinePlot[Reverse/@IV,AxesLabel->{"V","I"},PlotRange->All];
+plot2=ListPlot[{Callout[{Voc,0},"Voc = "<>ToString@Round[Voc,0.1]],Callout[{0,Isc},"Isc = "<>ToString@Round[Isc,0.1]],Callout[Reverse@mpp[[;;2]],"Vmpp = "<>ToString@Round[mpp[[2]],0.1]<>", Impp = "<>ToString@Round[mpp[[1]],0.1],Left]},
+PlotStyle->{Red,PointSize[Large]},Epilog->{Text["FF = "<>ToString@Round[Last@mpp/(Isc*Voc),0.01],{Voc/2,Isc/2},{0,-1}],Text["Power = "<>ToString@Round[Last@mpp,0.1],{Voc/2,Isc/2},{0,1}]}];
+
+Return[Show[plot2,plot1]];
+
+];
 
 
 (* ::Chapter:: *)
