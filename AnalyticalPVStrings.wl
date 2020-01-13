@@ -33,8 +33,6 @@ Options[StringIV]={"BypassDiode"->True,"BypassDiodeVoltage"->0.5};
 If[ Not@ValueQ[CombinerIV::usage],
 CombinerIV::usage = "combines individual IV curves into string IV curve assuming parallel connection."]
 
-Options[CombinerIV]={};
-
 If[ Not@ValueQ[MPPT::usage],
 MPPT::usage = "extract maximum power point in the IV curve."]
 
@@ -100,7 +98,6 @@ combinedIV=With[{range=Range[-0.2*maxJ,-0.04*maxJ,0.04*maxJ]~Join~Range[0,maxJ,M
 	,{i,Length@IVset}]}\[Transpose]];
 
 (* extend the IV curve towards higher current region to cover the complete voltage range *)
-maxJ=combinedIV[[-1,1]];
 probe=maxJ;
 
 While[(combinedIV[[-1,2]]>-diodeVoltage*Length@IVset*1.1 && probe<maxJ*1.1)||combinedIV[[-1,2]]>0,
@@ -118,13 +115,12 @@ Return[combinedIV];
 
 (* ::Text:: *)
 (*CombinerIV  takes care of combining IV in parallel both on string level or sub-module level. *)
-(*under development... *)
 (*In practice, IV behavior in the negative voltage range does not involve complications brought by diodes for strings/sub-strings combining in parallel (strings with bypass diodes combining in parallel, then in series with others is rarely seen in practice). *)
 
 
-CombinerIV[IVset_,opt:OptionsPattern[]]:=Module[{minV,maxV,diodeVoltage,combinedIV,IV$fleetInterp,probe},
+CombinerIV[IVset_]:=Module[{minV,maxV,maxJ,diodeVoltage,combinedIV,IV$fleetInterp,probe},
 maxV=Min@IVset[[All,1,2]];
-minV=Min[Max@IVset[[All,-1,2]],-0.2*maxV]; 
+minV=Min[Max@IVset[[All,-1,2]],0]; 
 (*for IVs with bypass diode combining in parallel, negative voltage beyond diode voltages is not available, this part is either not interesting to look at in practice, or can be simply interpolated*)
 
 (*for same voltage, add up current*)
@@ -137,17 +133,15 @@ combinedIV=With[{range=Range[maxV,minV,-Min[maxV/100,0.1]]},
 	,{i,Length@IVset}],range}\[Transpose]];
 
 (* extend the IV curve towards higher voltage region to cover a more complete current range *)
-(*maxJ=combinedIV[[-1,1]];
-probe=maxJ;
+probe=maxV;
+maxJ=combinedIV[[-1,1]];
 
-While[(combinedIV[[-1,2]]>-diodeVoltage*Length@IVset*1.1 && probe<maxJ*1.1)||combinedIV[[-1,2]]>0,
-(* as long as not all bypass diodes are activated in the IVset, i.e. voltage is not negatively biased enough *)
-	probe=combinedIV[[-1,1]]*1.01;
-	AppendTo[combinedIV,{probe,Total@Table[
-		With[{interpPt=IV$fleetInterp[[i]][probe]},If[bypass==True&&interpPt<-diodeVoltage,-diodeVoltage,interpPt]]
-		,{i,Length@IVset}]}
+While[combinedIV[[1,1]]>-0.2*maxJ,
+(* as long as current is still positive or not negative enough *)
+	probe=combinedIV[[1,2]]*1.01;
+	PrependTo[combinedIV,{Total@Table[IV$fleetInterp[[i]][probe],{i,Length@IVset}],probe}
 	];
-];*)
+];
 
 Return[combinedIV];
 ];
