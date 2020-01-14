@@ -46,12 +46,13 @@ Inputs are [IV curve, current, cable length (round trip), cable cross section (o
 
 
 If[ Not@ValueQ[ShadeAreaFraction::usage],
-ShadeAreaFraction::usage = "performs simple estimation of area based inter-row shading fraction of a typical array (sheds)."]
+ShadeAreaFraction::usage = "ShadeAreaFraction[pitch, table length, collector width, tilt, orientation, sun elevation, sun azimuth, table position (defulat 5), table number (default 10)] 
+performs simple estimation of area based inter-row shading fraction of a typical array (sheds)."]
 
 If[ Not@ValueQ[ElectricalShading::usage],
-ElectricalShading::usage = "gives estimation on electrical shading."]
+ElectricalShading::usage = "ElectricalShading[areaShaded, numSubString, orientation] gives estimation on electrical shading by giving."]
 
-Options[ElectricalShading]={"ModuleOrientation"->"landscape"};
+Options[ElectricalShading]={"ModuleDimension"->{6,12}}; (* default standard module dimension is 6x12 cells *)
 
 
 If[ Not@ValueQ[PlotIV::usage],
@@ -218,14 +219,14 @@ Return[shadeFraction];
 (*In case there are more than one string per table, i.e. upper and lower sub-row belongs to different PV strings, additional translation is needed separately for each upper and lower PV string. *)
 
 
-ElectricalShading[areaShaded_,numSubString_,opt:OptionsPattern[]]:=Module[{subStringArea,orientation=OptionValue["ModuleOrientation"],eShadeElementFn,nCompleteShade,remain,fractionalShade,x},
-subStringArea=1/numSubString;
+ElectricalShading[areaShaded_,numSubString_,orientation_:"landscape",opt:OptionsPattern[]]:=Module[{subStringArea,eShadeElementFn,modDimension=OptionValue["ModuleDimension"],nCompleteShade,remain,fractionalShade,x},
+subStringArea=1/numSubString; (* sub-string length in transverse direction *)
 
 If[orientation=="landscape",
 	eShadeElementFn=Piecewise[{{1/(0.5 subStringArea)*x,0<=x<0.5*subStringArea},{1,0.5*subStringArea<=x}},Null];
 ,
-(* else, portrait, assume 72 cell module *)
-	eShadeElementFn=Piecewise[{{1/(1/12*subStringArea)*x,0<=x<1/12*subStringArea},{1,1/12*subStringArea<=x}},Null];
+(* else, portrait *)
+	eShadeElementFn=Piecewise[{{1/(1/modDimension[[2]]*subStringArea)*x,0<=x<1/modDimension[[2]]*subStringArea},{1,1/modDimension[[2]]*subStringArea<=x}},Null];
 ];
 
 {nCompleteShade,remain}=QuotientRemainder[areaShaded,subStringArea];
@@ -240,11 +241,11 @@ Return@{nCompleteShade,fractionalShade};
 (*ElectricalShading in irregular shading mode... *)
 
 
-(* ::Section:: *)
+(* ::Section::Closed:: *)
 (*Auxiliary functions*)
 
 
-PlotIV[IV_]:=Module[{Isc,Voc,mpp,plot1,plot2},
+PlotIV[IV_,opt:OptionsPattern[]]:=Module[{Isc,Voc,mpp,plot1,plot2},
 
 Isc=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First],InterpolationOrder->1][0];
 Voc=Interpolation[DeleteDuplicatesBy[IV,First],InterpolationOrder->1][0];
@@ -253,7 +254,7 @@ mpp=MPPT@IV;
 
 plot1=ListLinePlot[Reverse/@IV,AxesLabel->{"V","I"},PlotRange->All];
 plot2=ListPlot[{Callout[{Voc,0},"Voc = "<>ToString@Round[Voc,0.1]],Callout[{0,Isc},"Isc = "<>ToString@Round[Isc,0.1]],Callout[Reverse@mpp[[;;2]],"Vmpp = "<>ToString@Round[mpp[[2]],0.1]<>", Impp = "<>ToString@Round[mpp[[1]],0.1],Left]},
-PlotStyle->{Red,PointSize[Large]},Epilog->{Text["FF = "<>ToString@Round[Last@mpp/(Isc*Voc),0.01],{Voc/2,Isc/2},{0,-1}],Text["Power = "<>ToString@Round[Last@mpp,0.1],{Voc/2,Isc/2},{0,1}]}];
+PlotStyle->{Red,PointSize[Large]},Epilog->{Text["FF = "<>ToString@Round[Last@mpp/(Isc*Voc),0.01],{Voc/2,Isc/2},{0,-1}],Text["Power = "<>ToString@Round[Last@mpp,0.1],{Voc/2,Isc/2},{0,1}]},opt];
 
 Return[Show[plot2,plot1]];
 
