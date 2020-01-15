@@ -36,7 +36,7 @@ CombinerIV::usage = "combines individual IV curves into string IV curve assuming
 If[ Not@ValueQ[MPPT::usage],
 MPPT::usage = "extract maximum power point in the IV curve."]
 
-Options[MPPT]={TrackingMethod->"Fast"};
+Options[MPPT]={"TrackingMethod"->"Fast","VoltageRange"->{150,1500}};
 
 If[ Not@ValueQ[CablingCorrection::usage],
 CablingCorrection::usage = "Modifies IV to include effect of cabling series resistance. 
@@ -153,19 +153,30 @@ Return[combinedIV];
 (*returns {current, voltage, power} at MPP. *)
 
 
-MPPT[IV_,opt:OptionsPattern[]]:=Module[{method,IVP,interp,maxJ,MPP,x},
-method=OptionValue[TrackingMethod];
+MPPT[IV_,opt:OptionsPattern[]]:=Module[{method,vRange=OptionValue["VoltageRange"],IVP,IV2,interp,maxJ,MPP,x},
+method=OptionValue["TrackingMethod"];
 
 If[method=="Fast",
 	IVP=Append[#,Times@@#]&/@IV;
-	MPP=First[IVP~Extract~Position[#,Max@#]&@Part[IVP\[Transpose],3]];
+	IVP=Select[IVP,#[[3]]>=0&&vRange[[1]]<#[[2]]<vRange[[2]]&];
+	If[Length@IVP==0,
+		MPP={0,0,0};
+		,
+		MPP=First[IVP~Extract~Position[#,Max@#]&@Part[IVP\[Transpose],3]];
+	];
 ];
 
 If[method=="Robust",
-	interp=Interpolation[IV,InterpolationOrder->1];
-	maxJ=IV[[-1,1]];
-	MPP=NMaximize[{interp[x]*x,{0<=x<maxJ}},x,AccuracyGoal->5,PrecisionGoal->5];
-	MPP={x/.#[[2,1]],interp[x/.#[[2,1]]],First@#}&@MPP;
+	IV2=Select[IV,#[[1]]>=0&&vRange[[1]]<#[[2]]<vRange[[2]]&];
+	
+	If[Length@IV2==0,
+		MPP={0,0,0};
+		,
+		interp=Interpolation[DeleteDuplicatesBy[Round[IV2,0.0001],First],InterpolationOrder->1];
+		maxJ=MinMax@IV2[[All,1]];
+		MPP=NMaximize[{interp[x]*x,{maxJ[[1]]<=x<=maxJ[[2]]}},x,AccuracyGoal->5,PrecisionGoal->5];
+		MPP={x/.#[[2,1]],interp[x/.#[[2,1]]],First@#}&@MPP;
+	];
 ];
 
 Return[MPP];
