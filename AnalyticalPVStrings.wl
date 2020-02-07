@@ -40,7 +40,7 @@ Options[MPPT]={"TrackingMethod"->"Fast","VoltageRange"->{150,1500}};
 
 If[ Not@ValueQ[CablingCorrection::usage],
 CablingCorrection::usage = "Modifies IV to include effect of cabling series resistance. 
-Inputs are [IV curve, current, cable length (round trip), cable cross section (optional), resistivity (optional)]."]
+Inputs are [IV curve, cable length (round trip), cable cross section (optional), resistivity (optional)]."]
 
 
 
@@ -188,10 +188,11 @@ Return[MPP];
 (*Default cross section is 6mm^2. Default resistivity is 0.023 ohm.mm^2/m (copper), use 0.037 for aluminum. *)
 
 
-CablingCorrection[IV_,current_,cableLength_,crossSection_:6,\[Rho]_:0.023]:=Module[{\[Delta]V},
-\[Delta]V=current*\[Rho]*cableLength/crossSection;
+CablingCorrection[IV_,cableLength_,crossSection_:6,\[Rho]_:0.023]:=Module[{\[Delta]V},
+\[Delta]V[current_]:=current*\[Rho]*cableLength/crossSection;
 
-Return[{#1,#2-Abs@\[Delta]V}&@@@IV];
+(* \[Delta]V is negative when current becomes negative *)
+Return[{#1,#2-\[Delta]V[#1]}&@@@IV]; 
 ];
 
 
@@ -218,7 +219,7 @@ If[\[Theta]<0,
 ];
 widthFraction=1-Min[1/w*(d Cos[tilt \[Degree]]-d Sin[tilt \[Degree]] Tan[90\[Degree]-tilt \[Degree]-sunElev \[Degree]]),1]//N;
 shadeFraction=rowFraction*widthFraction;
-Return[shadeFraction];
+Return[{shadeFraction,rowFraction,widthFraction}];
 
 ];
 
