@@ -36,7 +36,7 @@ CombinerIV::usage = "combines individual IV curves into string IV curve assuming
 If[ Not@ValueQ[MPPT::usage],
 MPPT::usage = "extract maximum power point in the IV curve."]
 
-Options[MPPT]={"TrackingMethod"->"Fast","VoltageRange"->{150,1500}};
+Options[MPPT]={"TrackingMethod"->"Fast","VoltageRange"->{150,1500},"SearchStep"->5,Clipping->None};
 
 If[ Not@ValueQ[CablingCorrection::usage],
 CablingCorrection::usage = "Modifies IV to include effect of cabling series resistance. 
@@ -151,33 +151,65 @@ Return[combinedIV];
 (* ::Text:: *)
 (*MPPT requires a set of IV curves in the format of {{current 1, voltage 1}, {current 2, voltage 2}...}. *)
 (*returns {current, voltage, power} at MPP. *)
+(*Method using NMaximize is generally very slow. *)
+(*The method "FindPeak" is somewhat more realistic in the sense that it is less likely to end up at MPP at the lower boundary of MPPT voltage range. *)
 
 
-MPPT[IV_,opt:OptionsPattern[]]:=Module[{method,vRange=OptionValue["VoltageRange"],IVP,IV2,interp,maxJ,MPP,x},
-method=OptionValue["TrackingMethod"];
+MPPT[IV_,opt:OptionsPattern[]]:=Module[{method=OptionValue["TrackingMethod"],vRange=OptionValue["VoltageRange"],searchStep=OptionValue["SearchStep"],pClip=OptionValue[Clipping],IVP,IV2,interp,maxJ,MPP={0,0,0},x,MPPsearch},
 
 If[method=="Fast",
 	IVP=Append[#,Times@@#]&/@IV;
 	IVP=Select[IVP,#[[3]]>=0&&vRange[[1]]<#[[2]]<vRange[[2]]&];
-	If[Length@IVP==0,
-		MPP={0,0,0};
-		,
+	If[Length@IVP!=0,
 		MPP=First[IVP~Extract~Position[#,Max@#]&@Part[IVP\[Transpose],3]];
+		(*MPP=First@MaximalBy[IVP,Last];*)
 	];
 ];
 
-If[method=="Robust",
+If[method=="FindPeak",
+	vRange={#1*1.025,#2}&@@vRange; (* modify lower boundary so that inverters are less likely to find the peak close to this end *)
 	IV2=Select[IV,#[[1]]>=0&&vRange[[1]]<#[[2]]<vRange[[2]]&];
 	
-	If[Length@IV2==0,
-		MPP={0,0,0};
-		,
-		interp=Interpolation[DeleteDuplicatesBy[Round[IV2,0.0001],First],InterpolationOrder->1];
+	If[Length@IV2!=0,
+		interp=Interpolation[DeleteDuplicatesBy[Round[Reverse/@IV,0.0001],First],InterpolationOrder->1]; (* interpolation: x\[Rule]voltage, y\[Rule]current *)
+		IV2=Append[{interp[vRange[[2]]],vRange[[2]]}]@Append[{interp[vRange[[1]]],vRange[[1]]}]@IV2;
+		IV2=DeleteDuplicatesBy[Last]@SortBy[Last]@IV2;
+		MPPsearch=FindPeaks[Times@@@IV2];
+		If[Length@MPPsearch>1,
+			MPPsearch=DeleteCases[MPPsearch,{1,_}]; (* remove the peak exactly at lower voltage boundary, if any *)
+			MPPsearch=MaximalBy[MPPsearch,Last];
+		];
+		MPP=Append[IV2[[MPPsearch[[1,1]]]],MPPsearch[[1,2]]];
+	];
+];
+
+If[method=="Absolute", (* guarantees absolute maximum *)
+	IV2=Select[IV,#[[1]]>=0&&vRange[[1]]<#[[2]]<vRange[[2]]&];
+	
+	If[Length@IV2!=0,
+		interp=Interpolation[DeleteDuplicatesBy[Round[IV,0.0001],First],InterpolationOrder->1]; (* interpolation: x\[Rule]current, y\[Rule]voltage *)
 		maxJ=MinMax@IV2[[All,1]];
 		MPP=NMaximize[{interp[x]*x,{maxJ[[1]]<=x<=maxJ[[2]]}},x,AccuracyGoal->5,PrecisionGoal->5];
 		MPP={x/.#[[2,1]],interp[x/.#[[2,1]]],First@#}&@MPP;
 	];
 ];
+
+Return[MPP];
+];
+
+
+MPPT[IV_,vProbe_,opt:OptionsPattern[]]:=Module[{vRange=OptionValue["VoltageRange"],pClip=OptionValue[Clipping],IVP,IV2,interp,maxJ,MPP={0,0,0},x,MPPsearch,Vmax},
+
+(* sticky method, may use previous voltage as the initial probe point, may end up with local maximum *)
+	IV2=Select[IV,#[[1]]>=0&&vRange[[1]]<#[[2]]<vRange[[2]]&];
+	If[Length@IV2!=0,
+		(*Voc=First[IV[[All,2]]~Extract~Position[IV[[All,1]],Min@Abs@IV[[All,1]]]];*)
+		interp=Interpolation[DeleteDuplicatesBy[Round[Reverse/@IV,0.0001],First],InterpolationOrder->1]; (* interpolation: x\[Rule]voltage, y\[Rule]current *)
+		
+		MPPsearch=Quiet@FindMaximum[{interp[x]*x,{vRange[[1]]<=x<=vRange[[2]]}},{x,vProbe},AccuracyGoal->3,PrecisionGoal->3];
+		Vmax=x/.Last@MPPsearch;
+		MPP={interp[Vmax],Vmax,First@MPPsearch};
+	];
 
 Return[MPP];
 ];
@@ -253,11 +285,11 @@ Return@{nCompleteShade,fractionalShade};
 (*ElectricalShading in irregular shading mode... *)
 
 
-(* ::Section::Closed:: *)
+(* ::Section:: *)
 (*Auxiliary functions*)
 
 
-PlotIV[IV_,opt:OptionsPattern[]]:=Module[{Isc,Voc,mpp,plot1,plot2},
+PlotIV[IV_List,opt:OptionsPattern[]]:=Module[{Isc,Voc,mpp,plot1,plot2},
 
 Isc=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First],InterpolationOrder->1][0];
 Voc=Interpolation[DeleteDuplicatesBy[IV,First],InterpolationOrder->1][0];
