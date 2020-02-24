@@ -36,7 +36,7 @@ CombinerIV::usage = "combines individual IV curves into string IV curve assuming
 If[ Not@ValueQ[MPPT::usage],
 MPPT::usage = "extract maximum power point in the IV curve."]
 
-Options[MPPT]={"TrackingMethod"->"Fast","VoltageRange"->{150,1500},"SearchStep"->5,Clipping->None};
+Options[MPPT]={"TrackingMethod"->"Fast","VoltageRange"->{150,1500},"SearchStep"->5,PowerLimit->None};
 
 If[ Not@ValueQ[CablingCorrection::usage],
 CablingCorrection::usage = "Modifies IV to include effect of cabling series resistance. 
@@ -53,6 +53,10 @@ If[ Not@ValueQ[ElectricalShading::usage],
 ElectricalShading::usage = "ElectricalShading[areaShaded, numSubString, orientation] gives estimation on electrical shading by giving."]
 
 Options[ElectricalShading]={"ModuleDimension"->{6,12}}; (* default standard module dimension is 6x12 cells *)
+
+
+If[ Not@ValueQ[IAMashrae::usage],
+IAMashrae::usage = "IAM[AOI,b0_0.05] ashrae model."]
 
 
 If[ Not@ValueQ[PlotIV::usage],
@@ -155,7 +159,7 @@ Return[combinedIV];
 (*The method "FindPeak" is somewhat more realistic in the sense that it is less likely to end up at MPP at the lower boundary of MPPT voltage range. *)
 
 
-MPPT[IV_,opt:OptionsPattern[]]:=Module[{method=OptionValue["TrackingMethod"],vRange=OptionValue["VoltageRange"],searchStep=OptionValue["SearchStep"],pClip=OptionValue[Clipping],IVP,IV2,interp,maxJ,MPP={0,0,0},x,MPPsearch},
+MPPT[IV_,opt:OptionsPattern[]]:=Module[{method=OptionValue["TrackingMethod"],vRange=OptionValue["VoltageRange"],searchStep=OptionValue["SearchStep"],pLimit=OptionValue[PowerLimit],IVP,IV2,interp,maxJ,MPP={0,0,0},x,MPPsearch},
 
 If[method=="Fast",
 	IVP=Append[#,Times@@#]&/@IV;
@@ -163,6 +167,23 @@ If[method=="Fast",
 	If[Length@IVP!=0,
 		MPP=First[IVP~Extract~Position[#,Max@#]&@Part[IVP\[Transpose],3]];
 		(*MPP=First@MaximalBy[IVP,Last];*)
+		
+		(* power limit *)
+		If[NumericQ@pLimit&&pLimit<Last@MPP,
+			interp=Interpolation[DeleteDuplicatesBy[Round[Reverse/@IV,0.0001],First],InterpolationOrder->1]; (* interpolation: x\[Rule]voltage, y\[Rule]current *)
+			MPPsearch=Pick[MovingAverage[IV[[All,2]],2],Negative/@Times@@@Partition[Times@@@IV-pLimit,2,1]]; (* pick out the voltages near pLimit *)
+			If[Length@MPPsearch==0,
+				MPP={0,0,0};
+			,
+				MPPsearch=Select[x/.FindRoot[interp[x]*x==pLimit,{x,MPPsearch}],vRange[[1]]<=#<=vRange[[2]]&];
+				If[Length@MPPsearch==0,
+				MPP={0,0,0};
+				,
+				MPPsearch=Max@MPPsearch; (* choose the larger voltage as the operating point *)
+				MPP=With[{i=interp[MPPsearch]},{i,MPPsearch,i*MPPsearch}];
+				];
+			];
+		];
 	];
 ];
 
@@ -172,18 +193,30 @@ If[method=="FindPeak",
 	
 	If[Length@IV2!=0,
 		interp=Interpolation[DeleteDuplicatesBy[Round[Reverse/@IV,0.0001],First],InterpolationOrder->1]; (* interpolation: x\[Rule]voltage, y\[Rule]current *)
-		IV2=Append[{interp[vRange[[2]]],vRange[[2]]}]@Append[{interp[vRange[[1]]],vRange[[1]]}]@IV2;
-		IV2=DeleteDuplicatesBy[Last]@SortBy[Last]@IV2;
-		MPPsearch=FindPeaks[Times@@@IV2];
+		IV2=Append[{interp[vRange[[2]]],vRange[[2]]}]@Append[{interp[vRange[[1]]],vRange[[1]]}]@IV2; (* add the two boundary points of MPPT working range *)
+		IV2=DeleteDuplicatesBy[Last]@SortBy[Last]@IV2; (* sorted by voltage, ascending order from small voltage to large *)
+		MPPsearch=FindPeaks[Times@@@IV2]; (* gives {position in list IV2, peak power} *)
 		If[Length@MPPsearch>1,
 			MPPsearch=DeleteCases[MPPsearch,{1,_}]; (* remove the peak exactly at lower voltage boundary, if any *)
 			MPPsearch=MaximalBy[MPPsearch,Last];
 		];
 		MPP=Append[IV2[[MPPsearch[[1,1]]]],MPPsearch[[1,2]]];
+		
+		(* power limit *)
+		If[NumericQ@pLimit&&pLimit<Last@MPP,
+			MPPsearch=Pick[MovingAverage[IV[[All,2]],2],Negative/@Times@@@Partition[Times@@@IV-pLimit,2,1]]; (* pick out the voltages near pLimit *)
+			MPPsearch=Select[x/.FindRoot[interp[x]*x==pLimit,{x,MPPsearch/.{}->{vRange[[2]]}}],vRange[[1]]<=#<=vRange[[2]]&];
+			If[Length@MPPsearch==0,
+				MPP={0,0,0};
+			,
+				MPPsearch=Max@MPPsearch; (* choose the larger voltage as the operating point *)
+				MPP=With[{i=interp[MPPsearch]},{i,MPPsearch,i*MPPsearch}];
+			];
+		];
 	];
 ];
 
-If[method=="Absolute", (* guarantees absolute maximum *)
+If[method=="Absolute", (* guarantees absolute maximum even when IV list does not have extensive coverage of points, do not choose this if there is pLimit *)
 	IV2=Select[IV,#[[1]]>=0&&vRange[[1]]<#[[2]]<vRange[[2]]&];
 	
 	If[Length@IV2!=0,
@@ -198,17 +231,31 @@ Return[MPP];
 ];
 
 
-MPPT[IV_,vProbe_,opt:OptionsPattern[]]:=Module[{vRange=OptionValue["VoltageRange"],pClip=OptionValue[Clipping],IVP,IV2,interp,maxJ,MPP={0,0,0},x,MPPsearch,Vmax},
+MPPT[IV_,vProbe_,opt:OptionsPattern[]]:=Module[{vRange=OptionValue["VoltageRange"],pLimit=OptionValue[PowerLimit],IVP,IV2,interp,maxJ,MPP={0,0,0},x,MPPsearch,Vmax},
 
+(* uses interpolation, not confined to finding a point already in the input IV list, as is the case with Fast and FindPeak methods *)
 (* sticky method, may use previous voltage as the initial probe point, may end up with local maximum *)
+
 	IV2=Select[IV,#[[1]]>=0&&vRange[[1]]<#[[2]]<vRange[[2]]&];
 	If[Length@IV2!=0,
 		(*Voc=First[IV[[All,2]]~Extract~Position[IV[[All,1]],Min@Abs@IV[[All,1]]]];*)
 		interp=Interpolation[DeleteDuplicatesBy[Round[Reverse/@IV,0.0001],First],InterpolationOrder->1]; (* interpolation: x\[Rule]voltage, y\[Rule]current *)
 		
-		MPPsearch=Quiet@FindMaximum[{interp[x]*x,{vRange[[1]]<=x<=vRange[[2]]}},{x,vProbe},AccuracyGoal->3,PrecisionGoal->3];
+		MPPsearch=Quiet@FindMaximum[{interp[x]*x,{vRange[[1]]<=x<=vRange[[2]]}},{x,vProbe},AccuracyGoal->3,PrecisionGoal->3]; (* gives {MPP, MPP voltage} *)
 		Vmax=x/.Last@MPPsearch;
 		MPP={interp[Vmax],Vmax,First@MPPsearch};
+		
+		(* power limit *)
+		If[NumericQ@pLimit&&pLimit<Last@MPP,
+			MPPsearch=Pick[MovingAverage[IV[[All,2]],2],Negative/@Times@@@Partition[Times@@@IV-pLimit,2,1]]; (* pick out the voltages near pLimit *)
+			MPPsearch=Select[x/.FindRoot[interp[x]*x==pLimit,{x,MPPsearch/.{}->{vRange[[2]]}}],vRange[[1]]<=#<=vRange[[2]]&];
+			If[Length@MPPsearch==0,
+				MPP={0,0,0};
+			,
+				MPPsearch=Max@MPPsearch; (* choose the larger voltage as the operating point *)
+				MPP=With[{i=interp[MPPsearch]},{i,MPPsearch,i*MPPsearch}];
+			];
+		];
 	];
 
 Return[MPP];
@@ -228,7 +275,7 @@ Return[{#1,#2-\[Delta]V[#1]}&@@@IV];
 ];
 
 
-(* ::Section:: *)
+(* ::Section::Closed:: *)
 (*Shading logics*)
 
 
@@ -283,6 +330,14 @@ Return@{nCompleteShade,fractionalShade};
 
 (* ::Text:: *)
 (*ElectricalShading in irregular shading mode... *)
+
+
+(* ::Section::Closed:: *)
+(*Incidence angle modifier*)
+
+
+IAMashrae[AOI_,b0_:0.05]:=Max[1-b0*(1/Cos[AOI \[Degree]]-1),0]/;0<=AOI<90;
+IAMashrae[AOI_?(!0<=#<90&),b0_:0.05]:=0;
 
 
 (* ::Section:: *)
