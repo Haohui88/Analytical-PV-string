@@ -170,18 +170,15 @@ If[method=="Fast",
 		
 		(* power limit *)
 		If[NumericQ@pLimit&&pLimit<Last@MPP,
+			Sow["power limited"];
 			interp=Interpolation[DeleteDuplicatesBy[Round[Reverse/@IV,0.0001],First],InterpolationOrder->1]; (* interpolation: x\[Rule]voltage, y\[Rule]current *)
 			MPPsearch=Pick[MovingAverage[IV[[All,2]],2],Negative/@Times@@@Partition[Times@@@IV-pLimit,2,1]]; (* pick out the voltages near pLimit *)
+			MPPsearch=Select[x/.FindRoot[interp[x]*x==pLimit,{x,MPPsearch/.{}->{vRange[[2]]}}],vRange[[1]]<=#<=vRange[[2]]&];
 			If[Length@MPPsearch==0,
 				MPP={0,0,0};
 			,
-				MPPsearch=Select[x/.FindRoot[interp[x]*x==pLimit,{x,MPPsearch}],vRange[[1]]<=#<=vRange[[2]]&];
-				If[Length@MPPsearch==0,
-				MPP={0,0,0};
-				,
 				MPPsearch=Max@MPPsearch; (* choose the larger voltage as the operating point *)
 				MPP=With[{i=interp[MPPsearch]},{i,MPPsearch,i*MPPsearch}];
-				];
 			];
 		];
 	];
@@ -204,6 +201,7 @@ If[method=="FindPeak",
 		
 		(* power limit *)
 		If[NumericQ@pLimit&&pLimit<Last@MPP,
+			Sow["power limited"];
 			MPPsearch=Pick[MovingAverage[IV[[All,2]],2],Negative/@Times@@@Partition[Times@@@IV-pLimit,2,1]]; (* pick out the voltages near pLimit *)
 			MPPsearch=Select[x/.FindRoot[interp[x]*x==pLimit,{x,MPPsearch/.{}->{vRange[[2]]}}],vRange[[1]]<=#<=vRange[[2]]&];
 			If[Length@MPPsearch==0,
@@ -247,6 +245,7 @@ MPPT[IV_,vProbe_,opt:OptionsPattern[]]:=Module[{vRange=OptionValue["VoltageRange
 		
 		(* power limit *)
 		If[NumericQ@pLimit&&pLimit<Last@MPP,
+			Sow["power limited"];
 			MPPsearch=Pick[MovingAverage[IV[[All,2]],2],Negative/@Times@@@Partition[Times@@@IV-pLimit,2,1]]; (* pick out the voltages near pLimit *)
 			MPPsearch=Select[x/.FindRoot[interp[x]*x==pLimit,{x,MPPsearch/.{}->{vRange[[2]]}}],vRange[[1]]<=#<=vRange[[2]]&];
 			If[Length@MPPsearch==0,
