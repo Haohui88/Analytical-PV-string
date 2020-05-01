@@ -80,7 +80,7 @@ Off[InterpolatingFunction::dmval];
 (* ::Text:: *)
 (*Overall convention: *)
 (*IV curve functions require a set of IV curves in the format of {{current 1, voltage 1}, {current 2, voltage 2}...}. *)
-(*The IV curves must be sorted by current in ascending order (from small to large, towards Isc, i.e. voltage from Voc, from +ve to -ve). *)
+(*The IV curves will be sorted by current in ascending order (from small to large, towards Isc, i.e. voltage from Voc, from +ve to -ve). *)
 (*Range of the input IV curves should be complete (at least covering one whole quadrant and cross the two axes). *)
 
 
@@ -88,8 +88,10 @@ Off[InterpolatingFunction::dmval];
 (*StringIV takes care of combining IV in series both on string level or sub-module level. *)
 
 
-StringIV[IVset_,opt:OptionsPattern[]]:=Module[{maxJ,bypass=OptionValue["BypassDiode"],diodeVoltage,combinedIV,IV$fleetInterp,probe},
-If[bypass==True,maxJ=Max@IVset[[All,-1,1]],maxJ=Min@IVset[[All,-1,1]]]; (*when bypass diodes are present, scan probing current to the max available in the IV set*)
+StringIV[inputIVset_,opt:OptionsPattern[]]:=Module[{IVset,maxJ,bypass=OptionValue["BypassDiode"],diodeVoltage,combinedIV,IV$fleetInterp,probe},
+IVset=SortBy[First]/@inputIVset;
+If[bypass==True,maxJ=Max@IVset[[All,-1,1]];,maxJ=Min@Cases[IVset[[All,-1,1]],_?Positive];]; (*when bypass diodes are present, scan probing current to the max available in the IV set*)
+If[!Positive@maxJ||!NumericQ@maxJ,Message[StringIV::invalidJ];Return[$Failed];Continue[];];
 diodeVoltage=OptionValue["BypassDiodeVoltage"];
 
 (*for same current, add up voltage*)
@@ -105,7 +107,7 @@ combinedIV=With[{range=Range[-0.2*maxJ,-0.04*maxJ,0.04*maxJ]~Join~Range[0,maxJ,M
 (* extend the IV curve towards higher current region to cover the complete voltage range *)
 probe=maxJ;
 
-While[(combinedIV[[-1,2]]>-diodeVoltage*Length@IVset*1.1 && probe<maxJ*1.1)||combinedIV[[-1,2]]>0,
+While[(combinedIV[[-1,2]]>-diodeVoltage*Length@IVset*1.1&&Abs@probe<Abs@maxJ*1.1)||combinedIV[[-1,2]]>0&&Abs@probe<Abs@maxJ*1.1,
 (* as long as not all bypass diodes are activated in the IVset, i.e. voltage is not negatively biased enough *)
 	probe=combinedIV[[-1,1]]*1.01;
 	AppendTo[combinedIV,{probe,Total@Table[
@@ -116,6 +118,7 @@ While[(combinedIV[[-1,2]]>-diodeVoltage*Length@IVset*1.1 && probe<maxJ*1.1)||com
 
 Return[combinedIV];
 ];
+StringIV::invalidJ="invalid short circuit current for IVs in the input set";
 
 
 (* ::Text:: *)
@@ -274,7 +277,7 @@ Return[{#1,#2-\[Delta]V[#1]}&@@@IV];
 ];
 
 
-(* ::Section::Closed:: *)
+(* ::Section:: *)
 (*Shading logics*)
 
 
@@ -283,22 +286,28 @@ Return[{#1,#2-\[Delta]V[#1]}&@@@IV];
 (*Determines shading for direct beam component only. *)
 
 
-ShadeAreaFraction[d_,L_,w_,tilt_,orientation_,sunElev_,sunAzimuth_,n_:5,m_:10]:=Module[{\[Theta],rowFraction,widthFraction,shadeFraction},
-\[Theta]=sunAzimuth-orientation;(*\[Theta] is transformed polar coordinate, + direction is clockwise, -ve direction is counter-clockwise, -90 to 0 is towards left, 0 to 90 is towards right, when facing forward*)
-If[\[Theta]>270,\[Theta]=\[Theta]-360];
-If[\[Theta]<-270,\[Theta]=\[Theta]+360];
+ShadeAreaFraction[d_,L_,w_,tilt_,orientation_,sunElev_,sunAzimuth_,n_:1,m_:10]:=Module[{\[Phi],\[Theta]z,rowFraction,widthFraction,shadeFraction},
+\[Phi]=sunAzimuth-orientation;(*\[Phi] is transformed polar coordinate, + direction is clockwise, -ve direction is counter-clockwise, -90 to 0 is towards left, 0 to 90 is towards right, when facing forward*)
+If[\[Phi]>270,\[Phi]=\[Phi]-360];
+If[\[Phi]<-270,\[Phi]=\[Phi]+360];
 
-rowFraction=If[Abs[\[Theta]]>=90,
+rowFraction=If[Abs[\[Phi]]>=90,
 0,
-If[\[Theta]<0,
-	Min[N[(n L-Min[d Tan[Abs[\[Theta]] \[Degree]],n L])/L],1],(*sunlight is from the left*)
-	Min[N[((m-n+1) L-Min[d Tan[Abs[\[Theta]] \[Degree]],(m-n+1) L])/L],1](*sunlight is from the right*)
-	]
+If[\[Phi]<0,
+Min[N[(n L-Min[d Tan[Abs[\[Phi]] \[Degree]],n L])/L],1],(*sunlight is from the left*)
+Min[N[((m-n+1) L-Min[d Tan[Abs[\[Phi]] \[Degree]],(m-n+1) L])/L],1](*sunlight is from the right*)
+]
 ];
-widthFraction=1-Min[1/w*(d Cos[tilt \[Degree]]-d Sin[tilt \[Degree]] Tan[90\[Degree]-tilt \[Degree]-sunElev \[Degree]]),1]//N;
+
+If[Abs[\[Phi]]>=90,
+widthFraction=0;
+,
+\[Theta]z=ArcTan[Sin[sunElev \[Degree]]/(Cos[sunElev \[Degree]] Cos[\[Phi] \[Degree]])]/Degree;
+widthFraction=1-Min[1/w*(d Cos[tilt \[Degree]]-d Sin[tilt \[Degree]] Tan[90\[Degree]-tilt \[Degree]-\[Theta]z \[Degree]]),1]//N;
+];
+
 shadeFraction=rowFraction*widthFraction;
 Return[{shadeFraction,rowFraction,widthFraction}];
-
 ];
 
 
