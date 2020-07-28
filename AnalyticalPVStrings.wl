@@ -73,7 +73,7 @@ Begin["`Private`"];
 Off[InterpolatingFunction::dmval];
 
 
-(* ::Section:: *)
+(* ::Section::Closed:: *)
 (*IV curve functions*)
 
 
@@ -284,6 +284,9 @@ Return[{#1,#2-\[Delta]V[#1]}&@@@IV];
 (* ::Text:: *)
 (*ShadeAreaFraction performs simple estimation of area based inter-row shading fraction of a typical array (sheds). *)
 (*Determines shading for direct beam component only. *)
+(*d - pitch of arrays in m;*)
+(*L - table length in m; *)
+(*w - collector width in m;*)
 
 
 ShadeAreaFraction[d_,L_,w_,tilt_,orientation_,sunElev_,sunAzimuth_,n_:1,m_:10]:=Module[{\[Phi],\[Theta]z,rowFraction,widthFraction,shadeFraction},
@@ -291,6 +294,7 @@ ShadeAreaFraction[d_,L_,w_,tilt_,orientation_,sunElev_,sunAzimuth_,n_:1,m_:10]:=
 If[\[Phi]>270,\[Phi]=\[Phi]-360];
 If[\[Phi]<-270,\[Phi]=\[Phi]+360];
 
+(* rowFraction: percentage of row length in lateral that is covered by shadow *)
 rowFraction=If[Abs[\[Phi]]>=90,
 0,
 If[\[Phi]<0,
@@ -299,11 +303,12 @@ Min[N[((m-n+1) L-Min[d Tan[Abs[\[Phi]] \[Degree]],(m-n+1) L])/L],1](*sunlight is
 ]
 ];
 
+(* widthFraction: percentage of length in transverse collector direction that is covered by shadow *)
 If[Abs[\[Phi]]>=90,
 widthFraction=0;
 ,
 \[Theta]z=ArcTan[Sin[sunElev \[Degree]]/(Cos[sunElev \[Degree]] Cos[\[Phi] \[Degree]])]/Degree;
-widthFraction=1-Min[1/w*(d Cos[tilt \[Degree]]-d Sin[tilt \[Degree]] Tan[90\[Degree]-tilt \[Degree]-\[Theta]z \[Degree]]),1]//N;
+widthFraction=Min[1-Min[1/w*(d Cos[tilt \[Degree]]-d Sin[tilt \[Degree]] Tan[90\[Degree]-tilt \[Degree]-\[Theta]z \[Degree]]),1],1]//N;
 ];
 
 shadeFraction=rowFraction*widthFraction;
@@ -312,13 +317,80 @@ Return[{shadeFraction,rowFraction,widthFraction}];
 
 
 (* ::Text:: *)
-(*ElectricalShading uses a set of simple logic to estimate the amount of complete and partial shading of substrings in terms of rows of substrings for landscape (each PV module has three substring if there are three bypass diodes) or rows of cells for portrait. *)
-(*Applicable to standard c-Si modules with bypass diodes, in the case of horizontally symmetric shading mode. *)
-(*Requires shaded area fraction of the table, and number of substrings in the transverse direction of the table. *)
-(*In case there are more than one string per table, i.e. upper and lower sub-row belongs to different PV strings, additional translation is needed separately for each upper and lower PV string. *)
+(*ElectricalShading uses a set of simple logic to estimate the amount of complete and partial shading of substrings (each PV module has three substring if there are three bypass diodes). *)
+(*Applicable to standard c-Si modules with bypass diodes. *)
+(*Requires shaded fraction and number of substrings in both lateral and transverse dimension (table configuration). Lengths in both directions will be measured as relative number (normalized to array table dimension). *)
+(*nc: number of substrings completely shaded*)
+(*nf: number of substrings fractionally shaded*)
+(*n0: number of substrings completely unshaded*)
+(*frac: fraction of shading*)
 
 
-ElectricalShading[areaShaded_,numSubString_,orientation_:"landscape",opt:OptionsPattern[]]:=Module[{subStringArea,eShadeElementFn,modDimension=OptionValue["ModuleDimension"],nCompleteShade,remain,fractionalShade,x},
+ElectricalShading[{shadeFracLat_?(0<=#<=1&),shadeFracTrans_?(0<=#<=1&)},{numSubStrLat_,numSubStrTrans_},orientation_:"landscape",opt:OptionsPattern[]]:=Module[{subStrLength,eShadeElementFn,modDimension=OptionValue["ModuleDimension"],n0,nc,ncLat,ncTrans,nfLat,nfTrans,remain,fracLat,fracTrans,x},
+
+(* ------------ in the transverse direction ------------------- *)
+subStrLength=1/numSubStrTrans; (* sub-string length in transverse direction *)
+
+If[orientation=="landscape",
+	eShadeElementFn=Piecewise[{{1/(0.5 subStrLength)*x,0<=x<0.5*subStrLength},{1,0.5*subStrLength<=x}},Null]; (* translate fraction of substring length shaded into electrical shading proportion *)
+,
+(* else, portrait *)
+	eShadeElementFn=Piecewise[{{1/(1/modDimension[[2]]*subStrLength)*x,0<=x<1/modDimension[[2]]*subStrLength},{1,1/modDimension[[2]]*subStrLength<=x}},Null];
+];
+
+{ncTrans,remain}=QuotientRemainder[shadeFracTrans,subStrLength];
+fracTrans=(eShadeElementFn/.x->remain);
+
+(* ------------ in the lateral direction ------------------- *)
+subStrLength=1/numSubStrLat; (* sub-string length in transverse direction *)
+
+If[orientation=="portrait",
+	eShadeElementFn=Piecewise[{{1/(0.5 subStrLength)*x,0<=x<0.5*subStrLength},{1,0.5*subStrLength<=x}},Null]; (* translate fraction of substring length shaded into electrical shading proportion *)
+,
+(* else, landscape *)
+	eShadeElementFn=Piecewise[{{1/(1/modDimension[[2]]*subStrLength)*x,0<=x<1/modDimension[[2]]*subStrLength},{1,1/modDimension[[2]]*subStrLength<=x}},Null];
+];
+
+{ncLat,remain}=QuotientRemainder[shadeFracLat,subStrLength];
+fracLat=(eShadeElementFn/.x->remain);
+
+(* determine nf as a status value indicating there is partially shaded substring in lateral/transverse direction *)
+Which[fracTrans==1,
+	ncTrans=ncTrans+1;
+	nfTrans=0;,
+fracTrans<0.05,
+	nfTrans=0;,
+True,
+	nfTrans=1;
+];
+
+Which[fracLat==1,
+	ncLat=ncLat+1;
+	nfLat=0;,
+fracLat<0.05,
+	nfLat=0;,
+True,
+	nfLat=1;
+];
+
+nfTrans=nfTrans*ncLat; (* nf updated as the number of substrings partially shaded *)
+nfLat=nfLat*ncTrans;
+nc=ncTrans*ncLat;
+(* here ignores the substring containing the corner cell which is partially shaded in both directions *)
+(*If[0.05<fracLat<1&&0.05<fracTrans<1,
+	nfCorner=1;
+	FracCorner=fracLat*fracTrans;
+];*)
+
+n0=numSubStrTrans*numSubStrLat-nc-nfTrans-nfLat;
+
+Return@{nc,{{nfLat,fracLat},{nfTrans,fracTrans}},n0};
+
+];
+
+
+(*depreciated*)
+(*ElectricalShading[areaShaded_,numSubString_,orientation_:"landscape",opt:OptionsPattern[]]:=Module[{subStringArea,eShadeElementFn,modDimension=OptionValue["ModuleDimension"],nCompleteShade,remain,fractionalShade,x},
 subStringArea=1/numSubString; (* sub-string length in transverse direction *)
 
 If[orientation=="landscape",
@@ -333,7 +405,7 @@ fractionalShade=(eShadeElementFn/.x->remain);
 
 Return@{nCompleteShade,fractionalShade};
 
-];
+];*)
 
 
 (* ::Text:: *)
