@@ -34,14 +34,18 @@ If[ Not@ValueQ[CombinerIV::usage],
 CombinerIV::usage = "combines individual IV curves into string IV curve assuming parallel connection."]
 
 If[ Not@ValueQ[MPPT::usage],
-MPPT::usage = "extract maximum power point in the IV curve."]
+MPPT::usage = "MPPT[IV] extract maximum power point in the IV curve. Possible TrackingMethods are: 
+Fast (max point in the supplied IV curve);
+FindPeak (uses function FindPeak to locate maximum, avoids returning MPP at boundary of MPPT voltage range);
+Absolute (uses interpolation and guarantees absolute maximum even when IV list does not have extensive coverage of points, do not choose this if there is pLimit). 
+MPPT[IV,vProbe] uses a sticky method, may use previous voltage as the initial probe point, may end up with local maximum. Also uses interpolation, not confined to finding a point already in the input IV list, as is the case with Fast and FindPeak methods."]
 
-Options[MPPT]={"TrackingMethod"->"Fast","VoltageRange"->{150,1500},"SearchStep"->5,PowerLimit->None};
+Options[MPPT]={"TrackingMethod"->"FindPeak","VoltageRange"->{150,1500},"SearchStep"->5,PowerLimit->None};
 
 If[ Not@ValueQ[CablingCorrection::usage],
 CablingCorrection::usage = "Modifies IV to include effect of cabling series resistance. 
-Inputs are [IV curve, cable length (round trip), cable cross section (optional), resistivity (optional)]."]
-
+Inputs are [IV curve, cable length (round trip), cable cross section (optional), resistivity (optional)].
+CablingCorrection[cableLength,crossSection_:6,\[Rho]_:0.023] is the operator form. "]
 
 
 
@@ -60,8 +64,21 @@ IAMashrae::usage = "IAM[AOI,b0_0.05] ashrae model."]
 
 
 If[ Not@ValueQ[PlotIV::usage],
-PlotIV::usage = "plot the IV curve with key points labelled."]
+PlotIV::usage = "PlotIV[IV,voltageRange(optional),PlotOptions] plots the IV curve with key points labelled.
+voltageRange of MPPT by default is {150,1500} (change this when dealing with cell IV). PlotOptions of ListPlot can be specified to change plot display. "]
 
+If[ Not@ValueQ[PlotPV::usage],
+PlotPV::usage = "PlotPV[IV,voltageRange(optional),PlotOptions] plots the PV curve with key points labelled.
+voltageRange of MPPT by default is {150,1500} (change this when dealing with cell IV). PlotOptions of ListPlot can be specified to change plot display. "]
+
+If[ Not@ValueQ[GetIsc::usage],
+GetIsc::usage = "GetIsc[IV] returns the Isc value of an IV curve. "]
+
+If[ Not@ValueQ[GetVoc::usage],
+GetVoc::usage = "GetVoc[IV] returns the Voc value of an IV curve. "]
+
+If[ Not@ValueQ[GetFF::usage],
+GetFF::usage = "GetFF[IV] returns the FF value of an IV curve. "]
 
 
 (* ::Chapter:: *)
@@ -73,7 +90,7 @@ Begin["`Private`"];
 Off[InterpolatingFunction::dmval];
 
 
-(* ::Section::Closed:: *)
+(* ::Section:: *)
 (*IV curve functions*)
 
 
@@ -86,6 +103,10 @@ Off[InterpolatingFunction::dmval];
 
 (* ::Text:: *)
 (*StringIV takes care of combining IV in series both on string level or sub-module level. *)
+(*IV with value Null is treated as completely blocked (zero output). *)
+
+
+StringIV[inputIVset_/;ContainsAny[inputIVset,{Null}],opt:OptionsPattern[]]=Null;
 
 
 StringIV[inputIVset_,opt:OptionsPattern[]]:=Module[{IVset,maxJ,bypass=OptionValue["BypassDiode"],diodeVoltage,combinedIV,IV$fleetInterp,probe},
@@ -160,6 +181,9 @@ Return[combinedIV];
 (*returns {current, voltage, power} at MPP. *)
 (*Method using NMaximize is generally very slow. *)
 (*The method "FindPeak" is somewhat more realistic in the sense that it is less likely to end up at MPP at the lower boundary of MPPT voltage range. *)
+
+
+MPPT[Null,opt:OptionsPattern[]]={0,0,0};
 
 
 MPPT[IV_,opt:OptionsPattern[]]:=Module[{method=OptionValue["TrackingMethod"],vRange=OptionValue["VoltageRange"],searchStep=OptionValue["SearchStep"],pLimit=OptionValue[PowerLimit],IVP,IV2,interp,maxJ,MPP={0,0,0},x,MPPsearch},
@@ -269,7 +293,7 @@ Return[MPP];
 (*Default cross section is 6mm^2. Default resistivity is 0.023 ohm.mm^2/m (copper), use 0.037 for aluminum. *)
 
 
-CablingCorrection[IV_,cableLength_,crossSection_:6,\[Rho]_:0.023]:=Module[{\[Delta]V},
+CablingCorrection[IV_List/;ArrayDepth@IV==2,cableLength_?NumericQ,crossSection_:6,\[Rho]_:0.023]:=Module[{\[Delta]V},
 \[Delta]V[current_]:=current*\[Rho]*cableLength/crossSection;
 
 (* \[Delta]V is negative when current becomes negative *)
@@ -277,7 +301,15 @@ Return[{#1,#2-\[Delta]V[#1]}&@@@IV];
 ];
 
 
-(* ::Section:: *)
+CablingCorrection[cableLength_?NumericQ,crossSection_:6,\[Rho]_:0.023][IV_List/;ArrayDepth@IV==2]:=Module[{\[Delta]V},
+\[Delta]V[current_]:=current*\[Rho]*cableLength/crossSection;
+
+(* \[Delta]V is negative when current becomes negative *)
+Return[{#1,#2-\[Delta]V[#1]}&@@@IV]; 
+];
+
+
+(* ::Section::Closed:: *)
 (*Shading logics*)
 
 
@@ -424,16 +456,52 @@ IAMashrae[AOI_?(!0<=#<90&),b0_:0.05]:=0;
 (*Auxiliary functions*)
 
 
-PlotIV[IV_List,opt:OptionsPattern[]]:=Module[{Isc,Voc,mpp,plot1,plot2},
+GetVoc[IV_List]:=Interpolation[DeleteDuplicatesBy[IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
+GetIsc[IV_List]:=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
+GetFF[IV_List]:=With[{Isc=GetIsc@IV,Voc=GetVoc@IV},Last@MPPT@IV/(Isc*Voc)];
 
-Isc=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First],InterpolationOrder->1][0];
-Voc=Interpolation[DeleteDuplicatesBy[IV,First],InterpolationOrder->1][0];
 
-mpp=MPPT@IV;
+PlotIV[IV_List,voltageRange:{_,_}:{150,1500},opt:OptionsPattern[ListPlot]]:=Module[{Isc,Voc,mpp,plot1,plot2,textLoc},
+
+Isc=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
+Voc=Interpolation[DeleteDuplicatesBy[IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
+
+mpp=MPPT[IV,"VoltageRange"->voltageRange]; (* {Impp,Vmpp,Pmpp} *)
 
 plot1=ListLinePlot[Reverse/@IV,AxesLabel->{"V","I"},PlotRange->All];
+
+textLoc=If[First@mpp<Isc/2 && mpp[[2]]<Voc*0.8,
+	{Voc*0.8,Isc*0.8}
+, (* If shaded, place on top right corner, else *)
+	{Voc/2,First@mpp/2}
+];
 plot2=ListPlot[{Callout[{Voc,0},"Voc = "<>ToString@Round[Voc,0.1]],Callout[{0,Isc},"Isc = "<>ToString@Round[Isc,0.1]],Callout[Reverse@mpp[[;;2]],"Vmpp = "<>ToString@Round[mpp[[2]],0.1]<>", Impp = "<>ToString@Round[mpp[[1]],0.1],Left]},
-PlotStyle->{Red,PointSize[Large]},Epilog->{Text["FF = "<>ToString@Round[Last@mpp/(Isc*Voc),0.01],{Voc/2,Isc/2},{0,-1}],Text["Power = "<>ToString@Round[Last@mpp,0.1],{Voc/2,Isc/2},{0,1}]},opt];
+Epilog->{Text["FF = "<>ToString@Round[Last@mpp/(Isc*Voc),0.01],textLoc,{0,-1}],Text["Power = "<>ToString@Round[Last@mpp,0.1],textLoc,{0,1}]},
+opt,PlotStyle->{Red,PointSize[Large]},AxesLabel->{"V","I"},ImageMargins->5,GridLines->Automatic];
+
+Return[Show[plot2,plot1]];
+
+];
+
+
+PlotPV[IV_List,voltageRange:{_,_}:{150,1500},opt:OptionsPattern[ListPlot]]:=Module[{Isc,Voc,mpp,plot1,plot2,VP,textLoc},
+
+Isc=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
+Voc=Interpolation[DeleteDuplicatesBy[IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
+
+mpp=MPPT[IV,"VoltageRange"->voltageRange]; (* {Impp,Vmpp,Pmpp} *)
+
+VP={#1,#1*#2}&@@@Reverse/@IV;
+plot1=ListLinePlot[VP,AxesLabel->{"V","P"},PlotRange->All];
+
+textLoc=If[mpp[[2]] < Voc*0.7,
+	{Voc/2,Last@mpp/3}
+,
+	{mpp[[2]]*0.8,Last@mpp/3}
+];
+plot2=ListPlot[{Callout[{Voc,0},"Voc = "<>ToString@Round[Voc,0.1]],Callout[mpp[[2;;]],"Vmpp = "<>ToString@Round[mpp[[2]],0.1]<>",\nPmpp = "<>ToString@Round[mpp[[3]],0.1],Top]},
+Epilog->{Text["FF = "<>ToString@Round[Last@mpp/(Isc*Voc),0.01],textLoc,{0,-1}],Text["Power = "<>ToString@Round[Last@mpp,0.1],textLoc,{0,1}]},
+opt,PlotStyle->{Red,PointSize[Large]},AxesLabel->{"V","P"},ImageMargins->5,GridLines->Automatic,PlotRange->{{0,Voc*1.1},{0,Max@VP[[All,2]]*1.2}}];
 
 Return[Show[plot2,plot1]];
 
