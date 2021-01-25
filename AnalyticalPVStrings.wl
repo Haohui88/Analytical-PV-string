@@ -26,7 +26,12 @@ BeginPackage["AnalyticalPVStrings`"];
 
 
 If[ Not@ValueQ[StringIV::usage],
-StringIV::usage = "combines individual IV curves into string IV curve assuming series connection."]
+StringIV::usage = "StringIV[inputIVset] combines individual IV curves into string IV curve assuming series connection. \
+IV curve set containing value Null is treated as completely blocked (zero output) if no bypass diode is present, and is ignored when bypass diode is present. \
+IV curve functions require a set of IV curves in the format of {{current 1, voltage 1}, {current 2, voltage 2}...}.
+Default options are: {\"BypassDiode\"->True,\"BypassDiodeVoltage\"->0.5}. "]
+
+StringIV::invalidJ="invalid short circuit current for IVs in the input set";
 
 Options[StringIV]={"BypassDiode"->True,"BypassDiodeVoltage"->0.5};
 
@@ -103,43 +108,69 @@ Off[InterpolatingFunction::dmval];
 
 (* ::Text:: *)
 (*StringIV takes care of combining IV in series both on string level or sub-module level. *)
-(*IV with value Null is treated as completely blocked (zero output). *)
+(*IV curve set containing value Null is treated as completely blocked (zero output) if no bypass diode is present, and is ignored when bypass diode is present. *)
 
 
-StringIV[inputIVset_/;ContainsAny[inputIVset,{Null}],opt:OptionsPattern[]]=Null;
+StringIV[inputIVset_/;ContainsAny[inputIVset,{Null}],opt:OptionsPattern[]]:=If[OptionValue["BypassDiode"],
+	StringIV[DeleteCases[inputIVset,Null],opt]
+,
+	Null
+];
 
 
-StringIV[inputIVset_,opt:OptionsPattern[]]:=Module[{IVset,maxJ,bypass=OptionValue["BypassDiode"],diodeVoltage,combinedIV,IV$fleetInterp,probe},
+StringIV[inputIVset:{{_?NumericQ,_?NumericQ}..},opt:OptionsPattern[]]:=inputIVset;
+StringIV[inputIVset:{{{_?NumericQ,_?NumericQ}..}},opt:OptionsPattern[]]:=First@inputIVset;
+
+
+StringIV[inputIVset_,opt:OptionsPattern[]]:=Module[{IVset,Jboundary,maxJ,bypass=OptionValue["BypassDiode"],diodeVoltage,combinedIV,IV$fleetInterp,Vprobe,probe},
 IVset=SortBy[First]/@inputIVset;
-If[bypass==True,maxJ=Max@IVset[[All,-1,1]];,maxJ=Min@Cases[IVset[[All,-1,1]],_?Positive];]; (*when bypass diodes are present, scan probing current to the max available in the IV set*)
-If[!Positive@maxJ||!NumericQ@maxJ,Message[StringIV::invalidJ];Return[$Failed];Continue[];];
 diodeVoltage=OptionValue["BypassDiodeVoltage"];
 
-(*for same current, add up voltage*)
 IV$fleetInterp=Interpolation[DeleteDuplicatesBy[Round[#,0.0001],First],InterpolationOrder->1]&/@IVset;
+
+Vprobe[J_]:=Total@Table[
+	With[{interpPt=IV$fleetInterp[[i]][J]},If[bypass==True&&interpPt<-diodeVoltage,-diodeVoltage,interpPt]]
+	,
+	{i,Length@IVset}
+];
+
+Jboundary=Sort@IVset[[All,-1,1]]; (* extreme current values in each IV curve *)
+If[bypass==True,
+	maxJ=Max@Jboundary;
+	probe=maxJ;
+	While[Vprobe[probe]<0,
+		probe=probe/2;
+	];
+	maxJ=probe*2;
+,
+	maxJ=Min@Cases[Jboundary,_?Positive];
+]; (*when bypass diodes are present, scan probing current to the max available in the IV set*)
+
+If[!Positive@maxJ||!NumericQ@maxJ,Message[StringIV::invalidJ];Return[$Failed];Continue[];];
+
+(*for same current, add up voltage*)
 combinedIV=With[{range=Range[-0.2*maxJ,-0.04*maxJ,0.04*maxJ]~Join~Range[0,maxJ,Min[maxJ/100,1]]},
-	{range,Total@Table[
+	{range,
+	Total@Table[
 		With[{interp=IV$fleetInterp[[i]]},
 			Table[With[{interpPt=interp[x]},If[bypass==True&&interpPt<-diodeVoltage,-diodeVoltage,interpPt]],{x,range}]
 			(*when bypass diode is present, negative voltage is pinned at diode voltage beyond Isc*)
 		]
-	,{i,Length@IVset}]}\[Transpose]];
+		,{i,Length@IVset}]
+	}\[Transpose]
+];
 
 (* extend the IV curve towards higher current region to cover the complete voltage range *)
 probe=maxJ;
 
-While[(combinedIV[[-1,2]]>-diodeVoltage*Length@IVset*1.1&&Abs@probe<Abs@maxJ*1.1)||combinedIV[[-1,2]]>0&&Abs@probe<Abs@maxJ*1.1,
+While[(bypass && combinedIV[[-1,2]]>-diodeVoltage*Length@IVset && Abs@probe<Abs@maxJ*2)  ||  (!bypass && combinedIV[[-1,2]]>-0.5 && Abs@probe<Abs@maxJ*50),
 (* as long as not all bypass diodes are activated in the IVset, i.e. voltage is not negatively biased enough *)
 	probe=combinedIV[[-1,1]]*1.01;
-	AppendTo[combinedIV,{probe,Total@Table[
-		With[{interpPt=IV$fleetInterp[[i]][probe]},If[bypass==True&&interpPt<-diodeVoltage,-diodeVoltage,interpPt]]
-		,{i,Length@IVset}]}
-	];
+	AppendTo[combinedIV,{probe,Vprobe@probe}];
 ];
 
 Return[combinedIV];
 ];
-StringIV::invalidJ="invalid short circuit current for IVs in the input set";
 
 
 (* ::Text:: *)
@@ -296,16 +327,15 @@ Return[MPP];
 CablingCorrection[IV_List/;ArrayDepth@IV==2,cableLength_?NumericQ,crossSection_:6,\[Rho]_:0.023]:=Module[{\[Delta]V},
 \[Delta]V[current_]:=current*\[Rho]*cableLength/crossSection;
 
-(* \[Delta]V is negative when current becomes negative *)
-Return[{#1,#2-\[Delta]V[#1]}&@@@IV]; 
+(* note: \[Delta]V is negative when current becomes negative, this is correct *)
+Return[If[cableLength>0,{#1,#2-\[Delta]V[#1]}&@@@IV,IV]]; 
 ];
 
 
 CablingCorrection[cableLength_?NumericQ,crossSection_:6,\[Rho]_:0.023][IV_List/;ArrayDepth@IV==2]:=Module[{\[Delta]V},
 \[Delta]V[current_]:=current*\[Rho]*cableLength/crossSection;
 
-(* \[Delta]V is negative when current becomes negative *)
-Return[{#1,#2-\[Delta]V[#1]}&@@@IV]; 
+Return[If[cableLength>0,{#1,#2-\[Delta]V[#1]}&@@@IV,IV]]; 
 ];
 
 
@@ -452,7 +482,7 @@ IAMashrae[AOI_,b0_:0.05]:=Max[1-b0*(1/Cos[AOI \[Degree]]-1),0]/;0<=AOI<90;
 IAMashrae[AOI_?(!0<=#<90&),b0_:0.05]:=0;
 
 
-(* ::Section:: *)
+(* ::Section::Closed:: *)
 (*Auxiliary functions*)
 
 
@@ -461,14 +491,9 @@ GetIsc[IV_List]:=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First@*(Round[#,0.
 GetFF[IV_List]:=With[{Isc=GetIsc@IV,Voc=GetVoc@IV},Last@MPPT@IV/(Isc*Voc)];
 
 
-PlotIV[IV_List,voltageRange:{_,_}:{150,1500},opt:OptionsPattern[ListPlot]]:=Module[{Isc,Voc,mpp,plot1,plot2,textLoc},
+PlotIV[IV_List,voltageRange:{_,_}:{0,1500},opt:OptionsPattern[ListPlot]]:=Module[{Isc=GetIsc@IV,Voc=GetVoc@IV,mpp=MPPT[IV,"VoltageRange"->voltageRange](* {Impp,Vmpp,Pmpp} *),plot1,plot2,textLoc},
 
-Isc=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
-Voc=Interpolation[DeleteDuplicatesBy[IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
-
-mpp=MPPT[IV,"VoltageRange"->voltageRange]; (* {Impp,Vmpp,Pmpp} *)
-
-plot1=ListLinePlot[Reverse/@IV,AxesLabel->{"V","I"},PlotRange->All];
+plot1=ListLinePlot[Reverse/@Sort@IV,AxesLabel->{"V","I"},PlotRange->All];
 
 textLoc=If[First@mpp<Isc/2 && mpp[[2]]<Voc*0.8,
 	{Voc*0.8,Isc*0.8}
@@ -484,14 +509,14 @@ Return[Show[plot2,plot1]];
 ];
 
 
-PlotPV[IV_List,voltageRange:{_,_}:{150,1500},opt:OptionsPattern[ListPlot]]:=Module[{Isc,Voc,mpp,plot1,plot2,VP,textLoc},
+PlotPV[IV_List,voltageRange:{_,_}:{0,1500},opt:OptionsPattern[ListPlot]]:=Module[{Isc=GetIsc@IV,Voc=GetVoc@IV,mpp=MPPT[IV,"VoltageRange"->voltageRange],plot1,plot2,VP,textLoc},
 
-Isc=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
+(*Isc=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
 Voc=Interpolation[DeleteDuplicatesBy[IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
 
-mpp=MPPT[IV,"VoltageRange"->voltageRange]; (* {Impp,Vmpp,Pmpp} *)
+mpp=MPPT[IV,"VoltageRange"->voltageRange];  {Impp,Vmpp,Pmpp} *)
 
-VP={#1,#1*#2}&@@@Reverse/@IV;
+VP={#1,#1*#2}&@@@Reverse/@Sort@IV;
 plot1=ListLinePlot[VP,AxesLabel->{"V","P"},PlotRange->All];
 
 textLoc=If[mpp[[2]] < Voc*0.7,
