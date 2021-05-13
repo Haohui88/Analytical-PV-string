@@ -14,9 +14,7 @@
 
 (* :Author: Dr. Liu Haohui *)
 
-(* :Package Version: 1.0 *)
-
-(* :Mathematica Version: 12.0 *)
+(* :Mathematica Version during conception: 12.0 *)
 
 (*:Summary:
 	provides analytical models for PV strings to calculate DC output.
@@ -36,7 +34,11 @@ StringIV::invalidJ="invalid short circuit current for IVs in the input set";
 Options[StringIV]={"BypassDiode"->True,"BypassDiodeVoltage"->0.5};
 
 If[ Not@ValueQ[CombinerIV::usage],
-CombinerIV::usage = "combines individual IV curves into string IV curve assuming parallel connection."]
+CombinerIV::usage = "CombinerIV[inputIVset] combines individual IV curves into string IV curve assuming parallel connection. \
+IV curve functions require a set of IV curves in the format of {{current 1, voltage 1}, {current 2, voltage 2}...}.
+Default options are: {\"BlockingDiode\"->False}. "]
+
+Options[CombinerIV]={"BlockingDiode"->False};
 
 If[ Not@ValueQ[MPPT::usage],
 MPPT::usage = "MPPT[IV] extract maximum power point in the IV curve. Possible TrackingMethods are: 
@@ -95,7 +97,7 @@ Begin["`Private`"];
 Off[InterpolatingFunction::dmval];
 
 
-(* ::Section:: *)
+(* ::Section::Closed:: *)
 (*IV curve functions*)
 
 
@@ -104,6 +106,7 @@ Off[InterpolatingFunction::dmval];
 (*IV curve functions require a set of IV curves in the format of {{current 1, voltage 1}, {current 2, voltage 2}...}. *)
 (*The IV curves will be sorted by current in ascending order (from small to large, towards Isc, i.e. voltage from Voc, from +ve to -ve). *)
 (*Range of the input IV curves should be complete (at least covering one whole quadrant and cross the two axes). *)
+(*All unit building block objects in a PV array should be represented by their complete IV curves under a certain input operating condition, instead of by objects which are computable. This is more advantageous if calculated IV can be memorized and basic building block units are repetitive. *)
 
 
 (* ::Text:: *)
@@ -144,7 +147,7 @@ If[bypass==True,
 	maxJ=probe*2;
 ,
 	maxJ=Min@Cases[Jboundary,_?Positive];
-]; (*when bypass diodes are present, scan probing current to the max available in the IV set*)
+]; (*when bypass diodes are present, scan probing current to at least overshoot combined Jsc, i.e. ensure combined voltage < 0 at maxJ*)
 
 If[!Positive@maxJ||!NumericQ@maxJ,Message[StringIV::invalidJ];Return[$Failed];Continue[];];
 
@@ -159,6 +162,10 @@ combinedIV=With[{range=Range[-0.2*maxJ,-0.04*maxJ,0.04*maxJ]~Join~Range[0,maxJ,M
 		,{i,Length@IVset}]
 	}\[Transpose]
 ];
+(* below method is slightly slower *)
+(*combinedIV=With[{range=Range[-0.2*maxJ,-0.04*maxJ,0.04*maxJ]~Join~Range[0,maxJ,Min[maxJ/100,1]]},
+	{range, Table[Vprobe@x,{x,range}]}\[Transpose]
+];*)
 
 (* extend the IV curve towards higher current region to cover the complete voltage range *)
 probe=maxJ;
@@ -166,29 +173,66 @@ probe=maxJ;
 While[(bypass && combinedIV[[-1,2]]>-diodeVoltage*Length@IVset && Abs@probe<Abs@maxJ*2)  ||  (!bypass && combinedIV[[-1,2]]>-0.5 && Abs@probe<Abs@maxJ*50),
 (* as long as not all bypass diodes are activated in the IVset, i.e. voltage is not negatively biased enough *)
 	probe=combinedIV[[-1,1]]*1.01;
-	AppendTo[combinedIV,{probe,Vprobe@probe}];
+	AppendTo[combinedIV,{probe,Vprobe@probe}]; 
 ];
 
-Return[combinedIV];
+(* make sure bypass diode activated range have more than one data point *)
+If[bypass,
+	probe=combinedIV[[-1,1]]*1.01;
+	AppendTo[combinedIV,{probe,Vprobe@probe}]; 
+];
+
+(* locate exact point where bypass diode is activated *)
+(*If[bypass,
+	probe=SelectFirst[combinedIV,#[[2]]\[Equal]First@Nearest[combinedIV[[All,2]],-diodeVoltage*Length@IVset]&];
+];*)
+
+Return[combinedIV//SortBy[First]];
 ];
 
 
 (* ::Text:: *)
 (*CombinerIV  takes care of combining IV in parallel both on string level or sub-module level. *)
-(*In practice, IV behavior in the negative voltage range does not involve complications brought by diodes for strings/sub-strings combining in parallel (strings with bypass diodes combining in parallel, then in series with others is rarely seen in practice). *)
+(*Here, IV behavior in the negative voltage range should not be trusted, as it does not involve complications brought by diodes for strings/sub-strings combining in parallel. *)
+(*Strings with bypass diodes combining in parallel is rarely seen in practice. For simulating half cut modules, bypass diode should only be specified when combining sub-strings in series afterwards (instead of when combing in parallel). *)
 
 
-CombinerIV[IVset_]:=Module[{minV,maxV,maxJ,diodeVoltage,combinedIV,IV$fleetInterp,probe},
+CombinerIV[inputIVset_,opt:OptionsPattern[]]:=Module[{IVset,Jprobe,minV,Vboundary,maxV,maxJ,blocking=OptionValue["BlockingDiode"],combinedIV,IV$fleetInterp,probe},
+IVset=SortBy[First]/@inputIVset;
+
+IV$fleetInterp=Interpolation[DeleteDuplicatesBy[Round[#,0.0001],First],InterpolationOrder->1]&/@Map[Reverse/@#&,IVset];
+
+Jprobe[V_]:=
+Total@Table[
+	With[{interpPt=IV$fleetInterp[[i]][V]},If[blocking&&interpPt<0,0,interpPt]]
+	,
+	{i,Length@IVset}
+];
+
+minV=0(*Min[Max@IVset[[All,-1,2]],0]*); (* min voltage is 0, not concerned with negative voltage *) 
+(*for IVs with bypass diode combining in parallel, negative voltage beyond diode voltages is not available, this part is not interesting to look at in practice, can be simply interpolated*)
+
 maxV=Min@IVset[[All,1,2]];
-minV=Min[Max@IVset[[All,-1,2]],0]; 
-(*for IVs with bypass diode combining in parallel, negative voltage beyond diode voltages is not available, this part is either not interesting to look at in practice, or can be simply interpolated*)
+Vboundary=IVset[[All,1,2]]; (* extreme voltage values in each IV curve *)
+If[blocking,
+	maxV=Max@Vboundary;
+	probe=maxV;
+	While[Jprobe[probe]<=0,
+		probe=probe*0.8;
+	];
+	maxV=probe/0.8;
+, (*else, no blocking *)
+	maxV=Min@Cases[Vboundary,_?Positive];
+]; 
+(*when blocking diodes are present, scan probing voltage to at least overshoot combined Voc, i.e. ensure combined current < 0 at maxV*)
+
 
 (*for same voltage, add up current*)
-IV$fleetInterp=Interpolation[DeleteDuplicatesBy[Round[#,0.0001],First],InterpolationOrder->1]&/@Map[Reverse/@#&,IVset];
-combinedIV=With[{range=Range[maxV,minV,-Min[maxV/100,0.1]]},
+combinedIV=With[{range=Range[maxV,minV,-Min[maxV/100,2]]},
 	{Total@Table[
 		With[{interp=IV$fleetInterp[[i]]},
-			Table[interp[x],{x,range}]
+			Table[With[{interpPt=interp[x]},If[blocking&&interpPt<0,0,interpPt]],{x,range}]
+			(*when blocking diode is present, current is pinned at 0 beyond I Voc*)
 		]
 	,{i,Length@IVset}],range}\[Transpose]];
 
@@ -196,11 +240,16 @@ combinedIV=With[{range=Range[maxV,minV,-Min[maxV/100,0.1]]},
 probe=maxV;
 maxJ=combinedIV[[-1,1]];
 
+If[!blocking,
+
 While[combinedIV[[1,1]]>-0.2*maxJ,
 (* as long as current is still positive or not negative enough *)
 	probe=combinedIV[[1,2]]*1.01;
-	PrependTo[combinedIV,{Total@Table[IV$fleetInterp[[i]][probe],{i,Length@IVset}],probe}
+	PrependTo[combinedIV,
+		{Jprobe[probe],probe}
 	];
+];
+
 ];
 
 Return[combinedIV];
@@ -486,8 +535,8 @@ IAMashrae[AOI_?(!0<=#<90&),b0_:0.05]:=0;
 (*Auxiliary functions*)
 
 
-GetVoc[IV_List]:=Interpolation[DeleteDuplicatesBy[IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
-GetIsc[IV_List]:=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
+GetVoc[IV_List]:=Interpolation[DeleteDuplicatesBy[SortBy[Last]@IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0];
+GetIsc[IV_List]:=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First@*(Round[#,0.0001]&)],InterpolationOrder->1][0]; 
 GetFF[IV_List]:=With[{Isc=GetIsc@IV,Voc=GetVoc@IV},Last@MPPT@IV/(Isc*Voc)];
 
 
