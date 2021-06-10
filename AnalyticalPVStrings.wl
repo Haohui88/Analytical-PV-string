@@ -23,69 +23,57 @@
 BeginPackage["AnalyticalPVStrings`"];
 
 
-If[ Not@ValueQ[StringIV::usage],
-StringIV::usage = "StringIV[inputIVset] combines individual IV curves into string IV curve assuming series connection. \
+StringIV::usage = "StringIV[inputIVset] combines individual IV curves into string IV curve assuming series connection. 
 IV curve set containing value Null is treated as completely blocked (zero output) if no bypass diode is present, and is ignored when bypass diode is present. \
 IV curve functions require a set of IV curves in the format of {{current 1, voltage 1}, {current 2, voltage 2}...}.
-Default options are: {\"BypassDiode\"->True,\"BypassDiodeVoltage\"->0.5}. "]
+Default options are: {\"BypassDiode\"->True,\"BypassDiodeVoltage\"->0.5}. ";
 
 StringIV::invalidJ="invalid short circuit current for IVs in the input set";
 
 Options[StringIV]={"BypassDiode"->True,"BypassDiodeVoltage"->0.5};
 
-If[ Not@ValueQ[CombinerIV::usage],
-CombinerIV::usage = "CombinerIV[inputIVset] combines individual IV curves into string IV curve assuming parallel connection. \
+CombinerIV::usage = "CombinerIV[inputIVset] combines individual IV curves into string IV curve assuming parallel connection. 
 IV curve functions require a set of IV curves in the format of {{current 1, voltage 1}, {current 2, voltage 2}...}.
-Default options are: {\"BlockingDiode\"->False}. "]
+Default options are: {\"BlockingDiode\"->False}. ";
 
 Options[CombinerIV]={"BlockingDiode"->False};
 
-If[ Not@ValueQ[MPPT::usage],
 MPPT::usage = "MPPT[IV] extract maximum power point in the IV curve. Possible TrackingMethods are: 
 Fast (max point in the supplied IV curve);
 FindPeak (uses function FindPeak to locate maximum, avoids returning MPP at boundary of MPPT voltage range);
 Absolute (uses interpolation and guarantees absolute maximum even when IV list does not have extensive coverage of points, do not choose this if there is pLimit). 
-MPPT[IV,vProbe] uses a sticky method, may use previous voltage as the initial probe point, may end up with local maximum. Also uses interpolation, not confined to finding a point already in the input IV list, as is the case with Fast and FindPeak methods."]
+MPPT[IV,vProbe] uses a sticky method, may use previous voltage as the initial probe point, may end up with local maximum. Also uses interpolation, not confined to finding a point already in the input IV list, as is the case with Fast and FindPeak methods.";
 
 Options[MPPT]={"TrackingMethod"->"FindPeak","VoltageRange"->{150,1500},"SearchStep"->5,PowerLimit->None};
 
-If[ Not@ValueQ[CablingCorrection::usage],
 CablingCorrection::usage = "Modifies IV to include effect of cabling series resistance. 
 Inputs are [IV curve, cable length (round trip), cable cross section (optional), resistivity (optional)].
-CablingCorrection[cableLength,crossSection_:6,\[Rho]_:0.023] is the operator form. "]
+CablingCorrection[cableLength,crossSection_:6,\[Rho]_:0.023] is the operator form. ";
 
 
 
-If[ Not@ValueQ[ShadeAreaFraction::usage],
 ShadeAreaFraction::usage = "ShadeAreaFraction[pitch, table length, collector width, tilt, orientation, sun elevation, sun azimuth, table position (defulat 5), table number (default 10)] 
-performs simple estimation of area based inter-row shading fraction of a typical array (sheds)."]
+performs simple estimation of area based inter-row shading fraction of a typical array (sheds).";
 
-If[ Not@ValueQ[ElectricalShading::usage],
-ElectricalShading::usage = "ElectricalShading[areaShaded, numSubString, orientation] gives estimation on electrical shading by giving."]
+ElectricalShading::usage = "ElectricalShading[areaShaded, numSubString, orientation] gives estimation on electrical shading by giving.";
 
 Options[ElectricalShading]={"ModuleDimension"->{6,12}}; (* default standard module dimension is 6x12 cells *)
 
 
-If[ Not@ValueQ[IAMashrae::usage],
-IAMashrae::usage = "IAM[AOI,b0_0.05] ashrae model."]
+IAMashrae::usage = "IAM[AOI,b0_0.05] ashrae model.";
 
 
-If[ Not@ValueQ[PlotIV::usage],
 PlotIV::usage = "PlotIV[IV,voltageRange(optional),PlotOptions] plots the IV curve with key points labelled.
-voltageRange of MPPT by default is {150,1500} (change this when dealing with cell IV). PlotOptions of ListPlot can be specified to change plot display. "]
+voltageRange of MPPT by default is {150,1500} (change this when dealing with cell IV). PlotOptions of ListPlot can be specified to change plot display. ";
 
-If[ Not@ValueQ[PlotPV::usage],
 PlotPV::usage = "PlotPV[IV,voltageRange(optional),PlotOptions] plots the PV curve with key points labelled.
-voltageRange of MPPT by default is {150,1500} (change this when dealing with cell IV). PlotOptions of ListPlot can be specified to change plot display. "]
+voltageRange of MPPT by default is {150,1500} (change this when dealing with cell IV). PlotOptions of ListPlot can be specified to change plot display. ";
 
-If[ Not@ValueQ[GetIsc::usage],
-GetIsc::usage = "GetIsc[IV] returns the Isc value of an IV curve. "]
+GetIsc::usage = "GetIsc[IV] returns the Isc value of an IV curve. ";
 
-If[ Not@ValueQ[GetVoc::usage],
-GetVoc::usage = "GetVoc[IV] returns the Voc value of an IV curve. "]
+GetVoc::usage = "GetVoc[IV] returns the Voc value of an IV curve. ";
 
-If[ Not@ValueQ[GetFF::usage],
-GetFF::usage = "GetFF[IV] returns the FF value of an IV curve. "]
+GetFF::usage = "GetFF[IV] returns the FF value of an IV curve. ";
 
 
 (* ::Chapter:: *)
@@ -540,7 +528,7 @@ GetIsc[IV_List]:=Interpolation[DeleteDuplicatesBy[Reverse/@IV,First@*(Round[#,0.
 GetFF[IV_List]:=With[{Isc=GetIsc@IV,Voc=GetVoc@IV},Last@MPPT@IV/(Isc*Voc)];
 
 
-PlotIV[IV_List,voltageRange:{_,_}:{0,1500},opt:OptionsPattern[ListPlot]]:=Module[{Isc=GetIsc@IV,Voc=GetVoc@IV,mpp=MPPT[IV,"VoltageRange"->voltageRange](* {Impp,Vmpp,Pmpp} *),plot1,plot2,textLoc},
+PlotIV[IV_List,Shortest[voltageRange:{_,_}:{0,1500}],opt:OptionsPattern[ListPlot]]:=Module[{Isc=GetIsc@IV,Voc=GetVoc@IV,mpp=MPPT[IV,"VoltageRange"->voltageRange](* {Impp,Vmpp,Pmpp} *),plot1,plot2,textLoc},
 
 plot1=ListLinePlot[Reverse/@Sort@IV,AxesLabel->{"V","I"},PlotRange->All];
 
