@@ -55,6 +55,9 @@ CablingCorrection[cableLength,crossSection_:6,\[Rho]_:0.023] is the operator for
 ShadeAreaFraction::usage = "ShadeAreaFraction[pitch, table length, collector width, tilt, orientation, sun elevation, sun azimuth, table position (defulat 5), table number (default 10)] 
 performs simple estimation of area based inter-row shading fraction of a typical array (sheds).";
 
+SimpleShadeTable::usage = "SimpleShadeTable[shadeTableLat,shadeTableTrans,sunElev,sunAzimuth] looks up the shading extent for a given solar position assuming a simple rectangular shade from two shading table profiles each describing the extent of shading on array lateral and transverse and directions. \
+ShadeTable can be interpolation function or arrays. For repeated calls using the same ShadeTable arrays, use SimpleShadeTable[shadeTableLat,shadeTableTrans][sunElev,sunAzimut] for faster evaluation (avoid constructing interpolation function every time). ";
+
 ElectricalShading::usage = "ElectricalShading[areaShaded, numSubString, orientation] gives estimation on electrical shading by giving.";
 
 Options[ElectricalShading]={"ModuleDimension"->{6,12}}; (* default standard module dimension is 6x12 cells *)
@@ -376,7 +379,7 @@ Return[If[cableLength>0,{#1,#2-\[Delta]V[#1]}&@@@IV,IV]];
 ];
 
 
-(* ::Section::Closed:: *)
+(* ::Section:: *)
 (*Shading logics*)
 
 
@@ -412,6 +415,38 @@ widthFraction=Min[1-Min[1/w*(d Cos[tilt \[Degree]]-d Sin[tilt \[Degree]] Tan[90\
 
 shadeFraction=rowFraction*widthFraction;
 Return[{shadeFraction,rowFraction,widthFraction}];
+];
+
+
+(* ::Text:: *)
+(*From two shading table profiles each describing the extent of shading on array lateral and transverse and directions, look up the shading extent for a given solar position assuming a simple rectangular shade. *)
+(*Shading table must be in the format: rows represent elevation, increasing from 0 to 90 from bottom to top; columns represent azimuth, ranges from -180 to 180 (east to west) from left to right. Increments are all 1. *)
+
+
+SimpleShadeTable[shadeTableLat_InterpolatingFunction,shadeTableTrans_InterpolatingFunction,sunElev_,sunAzimuth_]:=Module[{shadeFraction,rowFraction,widthFraction},
+rowFraction=shadeTableLat[sunElev,sunAzimuth];
+widthFraction=shadeTableTrans[sunElev,sunAzimuth];
+shadeFraction=rowFraction*widthFraction;
+
+Return[{shadeFraction,rowFraction,widthFraction}];
+];
+
+
+SimpleShadeTable[shadeTableLat_List,shadeTableTrans_List,sunElev_,sunAzimuth_]:=Block[{azimuth,elevation,interpLat,interpTrans},
+azimuth=Range[-180,180];
+elevation=Range[0,90];
+interpLat=Interpolation[Flatten[Table[{{x,y},shadeTableLat[[91-x,y+181]]},{x,elevation},{y,azimuth}],1],InterpolationOrder->1];
+interpTrans=Interpolation[Flatten[Table[{{x,y},shadeTableTrans[[91-x,y+181]]},{x,elevation},{y,azimuth}],1],InterpolationOrder->1];
+
+Return@SimpleShadeTable[interpLat,interpTrans,sunElev,sunAzimuth];
+];
+
+
+SimpleShadeTable[shadeTableLat_List,shadeTableTrans_List]:=SimpleShadeTable[shadeTableLat,shadeTableTrans]=Module[{azimuth=Range[-180,180],elevation=Range[0,90],interpLat,interpTrans},
+interpLat=Interpolation[Flatten[Table[{{x,y},shadeTableLat[[91-x,y+181]]},{x,elevation},{y,azimuth}],1],InterpolationOrder->1];
+interpTrans=Interpolation[Flatten[Table[{{x,y},shadeTableTrans[[91-x,y+181]]},{x,elevation},{y,azimuth}],1],InterpolationOrder->1];
+
+Return[SimpleShadeTable[interpLat,interpTrans,#1,#2]&];
 ];
 
 
